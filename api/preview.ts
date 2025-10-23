@@ -7,7 +7,7 @@ function cors() {
   return {
     headers: {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "https://YOUR-SHOP.myshopify.com",
+      "Access-Control-Allow-Origin": "https://pawincistore.myshopify.com/",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type"
     }
