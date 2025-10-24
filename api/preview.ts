@@ -1,35 +1,52 @@
 export const config = { runtime: "edge" };
 
-// Replace with your real Shopify storefront domain
-function cors() {
+// --- Allow-list of origins that can call your API ---
+const ALLOWED_ORIGINS = new Set([
+  "https://pawinci.com",
+  "https://www.pawinci.com",
+  "https://pawincistore.myshopify.com" // keep for Shopify theme editor
+]);
+
+function corsWithOrigin(origin: string | null) {
+  const allowed = origin && ALLOWED_ORIGINS.has(origin) ? origin : "";
   return {
     headers: {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "https://pawincistore.myshopify.com",
+      ...(allowed ? { "Access-Control-Allow-Origin": allowed } : {}),
       "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-      "Access-Control-Allow-Headers": "Content-Type"
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Vary": "Origin"
     }
   };
 }
 
 export default async function handler(req: Request) {
-  if (req.method === "OPTIONS") return new Response("ok", { status: 200, ...cors() });
+  const origin = req.headers.get("origin");
+
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { status: 200, ...corsWithOrigin(origin) });
+  }
+
   if (req.method === "GET") {
     return new Response(
       JSON.stringify({ ok: true, hint: "POST JSON { image_url, style }" }),
-      { status: 200, ...cors() }
+      { status: 200, ...corsWithOrigin(origin) }
     );
   }
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405, ...cors() });
+
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
+  }
 
   try {
     const { image_url, style } = await req.json();
     if (!image_url) {
-      return new Response(JSON.stringify({ error: "Missing image_url" }), { status: 400, ...cors() });
+      return new Response(JSON.stringify({ error: "Missing image_url" }), {
+        status: 400,
+        ...corsWithOrigin(origin)
+      });
     }
 
-    // Build inputs for Seedream 4. Start minimal to avoid schema mismatches.
-    // If the model supports width/height, you can uncomment and adjust.
     const input: Record<string, any> = {
       image: image_url,
       prompt: `${style || ""} Create a flattering portrait, maintain identity from the reference image.`.trim(),
@@ -37,7 +54,6 @@ export default async function handler(req: Request) {
       // height: 4096
     };
 
-    // IMPORTANT: Use the model endpoint so we don't need a version in the body
     const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
 
     const res = await fetch(url, {
@@ -47,33 +63,32 @@ export default async function handler(req: Request) {
         "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}`,
         "Prefer": "wait=60"
       },
-      body: JSON.stringify({ input }) // NOTE: no model, no version here
+      body: JSON.stringify({ input })
     });
 
     const text = await res.text();
     let data: any = null;
-    try { data = JSON.parse(text); } catch { /* keep as text for error visibility */ }
+    try { data = JSON.parse(text); } catch { /* keep as text */ }
 
-    // If it finished within the wait window, return the result
     if (res.ok && data?.status === "succeeded" && data?.output?.[0]) {
-      return new Response(JSON.stringify({ result_url: data.output[0] }), { status: 200, ...cors() });
+      return new Response(JSON.stringify({ result_url: data.output[0] }), { status: 200, ...corsWithOrigin(origin) });
     }
 
-    // If still processing, return the GET url so your /api/poll can check it
     if (data?.urls?.get) {
-      return new Response(JSON.stringify({ get_url: data.urls.get }), { status: 202, ...cors() });
+      return new Response(JSON.stringify({ get_url: data.urls.get }), { status: 202, ...corsWithOrigin(origin) });
     }
 
-    // Bubble up the real error from Replicate so we can see what's wrong
     console.error("Replicate error:", res.status, text);
     return new Response(JSON.stringify({ error: "Replicate error", status: res.status, details: text }), {
-      status: 500, ...cors()
+      status: 500,
+      ...corsWithOrigin(origin)
     });
 
   } catch (err: any) {
     console.error("Server error:", err);
     return new Response(JSON.stringify({ error: "Server error", details: String(err) }), {
-      status: 500, ...cors()
+      status: 500,
+      ...corsWithOrigin(origin)
     });
   }
 }
