@@ -47,11 +47,14 @@ export default async function handler(req: Request) {
       });
     }
 
+    // ✅ Seedream 4: use 'image_input' (array) for the reference photo
     const input: Record<string, any> = {
-      image: image_url,
-      prompt: `${style || ""} Create a flattering portrait, maintain identity from the reference image.`.trim(),
-      // width: 4096,
-      // height: 4096
+      prompt: `${(style || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`,
+      image_input: [image_url],       // <-- key fix
+      // Optional knobs you can try if supported by the model:
+      // aspect_ratio: "1:1",          // or "3:4", "4:3"
+      // size: "4K"                     // some builds accept size strings; otherwise omit
+      // width: 4096, height: 4096     // if the model accepts numeric dims instead
     };
 
     const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
@@ -68,7 +71,7 @@ export default async function handler(req: Request) {
 
     const text = await res.text();
     let data: any = null;
-    try { data = JSON.parse(text); } catch { /* keep as text */ }
+    try { data = JSON.parse(text); } catch {}
 
     if (res.ok && data?.status === "succeeded" && data?.output?.[0]) {
       return new Response(JSON.stringify({ result_url: data.output[0] }), { status: 200, ...corsWithOrigin(origin) });
@@ -80,15 +83,13 @@ export default async function handler(req: Request) {
 
     console.error("Replicate error:", res.status, text);
     return new Response(JSON.stringify({ error: "Replicate error", status: res.status, details: text }), {
-      status: 500,
-      ...corsWithOrigin(origin)
+      status: 500, ...corsWithOrigin(origin)
     });
 
   } catch (err: any) {
     console.error("Server error:", err);
     return new Response(JSON.stringify({ error: "Server error", details: String(err) }), {
-      status: 500,
-      ...corsWithOrigin(origin)
+      status: 500, ...corsWithOrigin(origin)
     });
   }
 }
