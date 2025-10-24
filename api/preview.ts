@@ -53,7 +53,7 @@ export default async function handler(req: Request) {
       image_input: [image_url],       // <-- key fix
       // Optional knobs you can try if supported by the model:
       // aspect_ratio: "1:1",          // or "3:4", "4:3"
-      // size: "4K"                     // some builds accept size strings; otherwise omit
+      size: "4K"                     // some builds accept size strings; otherwise omit
       // width: 4096, height: 4096     // if the model accepts numeric dims instead
     };
 
