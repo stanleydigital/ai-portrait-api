@@ -1,51 +1,81 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Pawinci Test</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Pawinci – Preview Tester</title>
   <link rel="preconnect" href="https://res.cloudinary.com" crossorigin>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 20px; }
-    .btn { padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+    :root { --gap: 12px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 20px; color:#111; }
+    .row { display:flex; gap: var(--gap); align-items:center; flex-wrap:wrap; }
+    .btn { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; background:#fff; cursor: pointer; }
+    .btn[disabled] { opacity: .6; cursor: not-allowed; }
     .spinner { width: 32px; height: 32px; border: 3px solid #ddd; border-top-color: #000; border-radius: 50%; animation: spin .8s linear infinite; display:none; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #preview { max-width: 640px; display:none; margin-top:12px; }
+    #preview { max-width: 640px; display:none; margin-top:12px; border-radius:12px; }
+    #status { margin-top:8px; color:#444; }
+    textarea { width:100%; max-width: 820px; border-radius:10px; padding:10px; border:1px solid #ddd; }
+    .label { font-weight:600; margin-top:18px; display:block; }
+    .hint { font-size: 12px; color:#666; margin-top: 4px; }
+    code.kv { background:#f6f6f6; padding:2px 6px; border-radius:6px; }
   </style>
 </head>
 <body>
-  <h1>Preview generator (no Shopify)</h1>
-  <p>Upload → Generate → Shows Cloudinary-hosted watermarked preview.</p>
+  <h1>Pawinci – Preview Generator (No Shopify)</h1>
+  <p>Use this page to verify your Vercel backend + Replicate + Cloudinary pipeline, independent of Shopify.</p>
 
-  <input type="file" id="file" accept="image/*" />
-  <button class="btn" id="uploadBtn">Upload to Cloudinary</button>
-  <button class="btn" id="genBtn" disabled>Generate Portrait</button>
-  <div class="spinner" id="spin"></div>
-  <div id="status" style="margin-top:8px;color:#444;"></div>
+  <label class="label">1) Upload a photo</label>
+  <div class="row">
+    <input type="file" id="file" accept="image/*"/>
+    <button class="btn" id="uploadBtn">Upload to Cloudinary</button>
+    <div class="spinner" id="spin"></div>
+  </div>
+  <div class="hint">Uploads to your Cloudinary (<code class="kv">ddhhdvszj</code>) using preset <code class="kv">shopify_unsigned</code>.</div>
 
-  <img id="preview" alt="Preview" />
+  <label class="label">2) Prompt (style)<span class="hint"> — sent as <code class="kv">style</code> to <code class="kv">/api/preview</code></span></label>
+  <textarea id="prompt" rows="5" placeholder="Enter your full Seedream-4 prompt here. Example:
+Create a 4K digital portrait of the PET from the uploaded photo, Seedream 4 style. Preserve exact identity (same markings, coat pattern, colors, eye color). Studio chest-up, soft gradient background, soft realistic lighting."></textarea>
+
+  <label class="label">3) Generate</label>
+  <div class="row">
+    <button class="btn" id="genBtn" disabled>Generate Portrait</button>
+  </div>
+
+  <div id="status"></div>
+  <img id="preview" alt="Preview"/>
 
   <script>
-    const CLOUD_NAME = "ddhhdvszj";
+    // ====== CONFIG ======
+    const CLOUD_NAME   = "ddhhdvszj";
     const UPLOAD_PRESET = "shopify_unsigned";
-    const API_BASE = "https://ai-portrait-api.vercel.app";
-    const PREVIEW_API = `${API_BASE}/api/preview`;
-    const POLL_API = `${API_BASE}/api/poll`;
+    const API_BASE     = "https://ai-portrait-api.vercel.app"; // your Vercel deployment
+    const PREVIEW_API  = `${API_BASE}/api/preview`;
+    const POLL_API     = `${API_BASE}/api/poll`;
 
-    const fileEl = document.getElementById("file");
-    const uploadBtn = document.getElementById("uploadBtn");
-    const genBtn = document.getElementById("genBtn");
-    const spin = document.getElementById("spin");
+    // ====== UI refs ======
+    const fileEl   = document.getElementById("file");
+    const uploadBtn= document.getElementById("uploadBtn");
+    const genBtn   = document.getElementById("genBtn");
+    const spin     = document.getElementById("spin");
     const statusEl = document.getElementById("status");
-    const preview = document.getElementById("preview");
+    const preview  = document.getElementById("preview");
+    const promptEl = document.getElementById("prompt");
 
     let uploadedUrl = null;
 
+    // ====== Helpers ======
+    function setBusy(on=true) { spin.style.display = on ? "inline-block" : "none"; }
+
     function wmCloudinary(url) {
-      // If already a Cloudinary upload, add transform; else use image/fetch
+      // If already a Cloudinary upload, apply transform inline
       if (/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(url)) {
-        return url.replace("/upload/", "/upload/f_auto,q_auto,w_1280/l_text:sans_60:PREVIEW%20%E2%80%A2%20DO%20NOT%20COPY,co_rgb:FFFFFF,g_center,o_40/");
+        return url.replace(
+          "/upload/",
+          "/upload/f_auto,q_auto,w_1280/l_text:sans_60:PREVIEW%20%E2%80%A2%20DO%20NOT%20COPY,co_rgb:FFFFFF,g_center,o_40/"
+        ) + `?cb=${Date.now()}`;
       }
+      // Else use image/fetch fallback (may be rate-limited; we add a runtime fallback too)
       const t = "f_auto,q_auto,w_1280/l_text:sans_60:PREVIEW%20%E2%80%A2%20DO%20NOT%20COPY,co_rgb:FFFFFF,g_center,o_40";
       return `https://res.cloudinary.com/${CLOUD_NAME}/image/fetch/${t}/${encodeURIComponent(url)}?cb=${Date.now()}`;
     }
@@ -56,14 +86,20 @@
       fd.append("file", file);
       fd.append("upload_preset", UPLOAD_PRESET);
       statusEl.textContent = "Uploading photo…";
+      console.log("[upload] to Cloudinary…");
       const r = await fetch(url, { method: "POST", body: fd });
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) {
+        const t = await r.text();
+        console.error("[upload] failed:", t);
+        throw new Error(t);
+      }
       const j = await r.json();
+      console.log("[upload] ok:", j.secure_url);
       return j.secure_url;
     }
 
     async function pollUntilReady(getUrl) {
-      const start = Date.now(), max = 5*60*1000;
+      const start = Date.now(), max = 5 * 60 * 1000;
       let delay = 2000;
       while (Date.now() - start < max) {
         const r = await fetch(POLL_API, {
@@ -72,72 +108,89 @@
           body: JSON.stringify({ get_url: getUrl })
         });
         const j = await r.json();
+        console.log("[poll]", j);
         if (j.status === "succeeded") return j; // { status, result_url, cdn_url? }
-        if (j.status === "failed" || j.status === "canceled") throw new Error("Job failed");
+        if (j.status === "failed" || j.status === "canceled") throw new Error(`Job ${j.status}`);
         await new Promise(res => setTimeout(res, delay));
         delay = Math.min(delay + 500, 5000);
       }
-      throw new Error("Timed out");
+      throw new Error("Timed out waiting for Replicate");
     }
 
+    function showPreviewWithFallback(baseUrl) {
+      return new Promise((resolve) => {
+        const wm = wmCloudinary(baseUrl);
+        const img = preview;
+
+        img.onload = () => { img.style.display = "block"; resolve(); };
+        img.onerror = () => {
+          console.warn("[preview] watermark transform failed, falling back to original URL");
+          img.onerror = null;
+          img.src = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "cb=" + Date.now();
+        };
+
+        img.src = wm;
+      });
+    }
+
+    // ====== UI actions ======
     uploadBtn.onclick = async () => {
       const f = fileEl.files?.[0];
       if (!f) { alert("Pick an image first"); return; }
+      setBusy(true); genBtn.disabled = true; preview.style.display = "none";
       try {
-        genBtn.disabled = true;
-        spin.style.display = "inline-block";
-        const url = await uploadToCloudinary(f);
-        uploadedUrl = url;
+        uploadedUrl = await uploadToCloudinary(f);
         statusEl.textContent = "Upload complete — click Generate.";
         genBtn.disabled = false;
       } catch (e) {
-        statusEl.textContent = "Upload failed.";
+        statusEl.textContent = "Upload failed. See console for details.";
         console.error(e);
       } finally {
-        spin.style.display = "none";
+        setBusy(false);
       }
     };
 
     genBtn.onclick = async () => {
       if (!uploadedUrl) { alert("Upload a photo first"); return; }
+      setBusy(true); preview.style.display = "none";
       try {
-        spin.style.display = "inline-block";
+        const style = (promptEl.value || "Create a 4K digital portrait, preserve exact identity.").trim();
         statusEl.textContent = "Creating your portrait…";
-        preview.style.display = "none";
+        console.log("[preview] POST", { image_url: uploadedUrl, style });
 
-        const prompt = "Create a 4K digital portrait, preserve exact identity.";
+        // Start the job (may also finish here if under 60s)
         const resp = await fetch(PREVIEW_API, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image_url: uploadedUrl, style: prompt })
+          body: JSON.stringify({ image_url: uploadedUrl, style })
         });
         const first = await resp.json();
+        console.log("[preview] response:", first);
 
         let resultUrl = first.result_url;
-        let cdnUrl = first.cdn_url;
+        let cdnUrl    = first.cdn_url;
 
+        // If still processing, poll to completion
         if (!resultUrl && first.get_url) {
           statusEl.textContent = "Processing…";
           const polled = await pollUntilReady(first.get_url);
           resultUrl = polled.result_url;
-          cdnUrl = polled.cdn_url || null;
+          cdnUrl    = polled.cdn_url || null;
         }
 
         const base = cdnUrl || resultUrl;
-        if (!base) throw new Error("No URL returned");
+        if (!base) throw new Error("No URL returned from backend");
 
-        const wm = wmCloudinary(base);
-        preview.src = wm;
-        preview.style.display = "block";
+        statusEl.textContent = "Rendering preview…";
+        await showPreviewWithFallback(base);
         statusEl.textContent = "Preview ready (watermarked).";
       } catch (e) {
-        statusEl.textContent = "Generation failed (frontend). Check logs.";
+        statusEl.textContent = "Generation failed on the client. Check console.";
         console.error(e);
       } finally {
-        spin.style.display = "none";
+        setBusy(false);
       }
     };
   </script>
 </body>
 </html>
-
