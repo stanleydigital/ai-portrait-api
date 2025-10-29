@@ -4,7 +4,7 @@ export const config = { runtime: "edge" };
 const ALLOWED_ORIGINS = new Set([
   "https://pawinci.com",
   "https://www.pawinci.com",
-  "https://pawincistore.myshopify.com"
+  "https://pawincistore.myshopify.com" // keep for Shopify theme editor
 ]);
 
 function corsWithOrigin(origin: string | null) {
@@ -20,7 +20,7 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
-// --- Helpers ---
+// ---------- Helpers ----------
 function pickUrl(output: any): string | null {
   if (!output) return null;
   if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
@@ -38,7 +38,6 @@ function pickUrl(output: any): string | null {
   return null;
 }
 
-// Uploads a remote image URL to Cloudinary and returns a stable secure_url
 async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
@@ -57,7 +56,7 @@ async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
   return json.secure_url as string;
 }
 
-// --- Main handler ---
+// ---------- Main handler ----------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
 
@@ -80,12 +79,11 @@ export default async function handler(req: Request) {
     const { image_url, style } = await req.json();
     if (!image_url) {
       return new Response(JSON.stringify({ error: "Missing image_url" }), {
-        status: 400,
-        ...corsWithOrigin(origin)
+        status: 400, ...corsWithOrigin(origin)
       });
     }
 
-    // ✅ Seedream 4: correct input format
+    // --- Build the input for Seedream 4 ---
     const input: Record<string, any> = {
       prompt: `${(style || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`,
       image_input: [image_url],
@@ -108,22 +106,25 @@ export default async function handler(req: Request) {
     let data: any = null;
     try { data = JSON.parse(text); } catch {}
 
-    // If it finished within the wait window, handle it immediately
+    // ✅ If Replicate finished within 60s
     if (res.ok && data?.status === "succeeded") {
       const replicateUrl = pickUrl(data.output);
       if (replicateUrl) {
         let cdnUrl: string | null = null;
-        try { cdnUrl = await uploadResultToCloudinary(replicateUrl); } catch (err) {
-          console.warn("Cloudinary upload failed, continuing with Replicate URL:", err);
+        try {
+          cdnUrl = await uploadResultToCloudinary(replicateUrl);
+        } catch (err) {
+          console.warn("Cloudinary upload failed, using Replicate URL:", err);
         }
+
         return new Response(
-          JSON.stringify({ result_url: replicateUrl, cdn_url: cdnUrl }),
+          JSON.stringify({ result_url: replicateUrl, cdn_url: cdnUrl, status: "succeeded" }),
           { status: 200, ...corsWithOrigin(origin) }
         );
       }
     }
 
-    // If still processing, return GET URL for polling
+    // ⏳ If still processing, return the polling URL
     if (data?.urls?.get) {
       return new Response(
         JSON.stringify({ get_url: data.urls.get, status: data.status || "processing" }),
@@ -131,17 +132,18 @@ export default async function handler(req: Request) {
       );
     }
 
+    // ❌ Catch-all error
     console.error("Replicate error:", res.status, text);
-    return new Response(JSON.stringify({
-      error: "Replicate error",
-      status: res.status,
-      details: text
-    }), { status: 500, ...corsWithOrigin(origin) });
+    return new Response(
+      JSON.stringify({ error: "Replicate error", status: res.status, details: text }),
+      { status: 500, ...corsWithOrigin(origin) }
+    );
 
   } catch (err: any) {
     console.error("Server error:", err);
-    return new Response(JSON.stringify({ error: "Server error", details: String(err) }), {
-      status: 500, ...corsWithOrigin(origin)
-    });
+    return new Response(
+      JSON.stringify({ error: "Server error", details: String(err) }),
+      { status: 500, ...corsWithOrigin(origin) }
+    );
   }
 }
