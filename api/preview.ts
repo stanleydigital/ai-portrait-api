@@ -87,7 +87,7 @@ export default async function handler(req: Request) {
     const input: Record<string, any> = {
       prompt: `${(style || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`,
       image_input: [image_url],
-      size: "4k"
+      size: "4K"
     };
 
     const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
