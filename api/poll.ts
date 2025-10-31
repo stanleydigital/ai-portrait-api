@@ -13,7 +13,7 @@ function corsWithOrigin(origin: string | null) {
     headers: {
       "Content-Type": "application/json",
       ...(allowed ? { "Access-Control-Allow-Origin": allowed } : {}),
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
       "Vary": "Origin"
     }
@@ -46,7 +46,6 @@ async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
   const fd = new FormData();
   fd.append("file", fileUrl);          // remote URL from Replicate
   fd.append("upload_preset", preset);
-  // Optional: fd.append("folder", "ai-previews");
 
   const r = await fetch(endpoint, { method: "POST", body: fd });
   if (!r.ok) {
@@ -57,6 +56,73 @@ async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
   return json.secure_url as string;    // stable CDN URL
 }
 
+async function pollById(id: string) {
+  const r = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
+    headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
+  });
+
+  if (!r.ok) {
+    // transient hiccup → keep client polling
+    return { status: "processing", id } as const;
+  }
+
+  const pred = await r.json();
+  const status = (pred.status || "").toLowerCase();
+
+  if (status === "succeeded") {
+    const replicateUrl = pickUrl(pred.output);
+    let cdn_url: string | null = null;
+    if (replicateUrl) {
+      try { cdn_url = await uploadResultToCloudinary(replicateUrl); }
+      catch (e) { console.warn("Cloudinary upload failed (fallback to Replicate URL):", e); }
+    }
+    return {
+      status: "succeeded",
+      id,
+      output: replicateUrl ? [replicateUrl] : [],
+      cdn_url
+    } as const;
+  }
+
+  if (status === "failed" || status === "canceled") {
+    return { status, id, error: pred.error || null } as const;
+  }
+
+  // queued | starting | processing
+  return { status: "processing", id } as const;
+}
+
+async function pollByGetUrl(get_url: string) {
+  const r = await fetch(get_url, {
+    headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
+  });
+
+  if (!r.ok) return { status: "processing" } as const;
+
+  const pred = await r.json();
+  const status = (pred.status || "").toLowerCase();
+
+  if (status === "succeeded") {
+    const replicateUrl = pickUrl(pred.output);
+    let cdn_url: string | null = null;
+    if (replicateUrl) {
+      try { cdn_url = await uploadResultToCloudinary(replicateUrl); }
+      catch (e) { console.warn("Cloudinary upload failed (fallback to Replicate URL):", e); }
+    }
+    return {
+      status: "succeeded",
+      output: replicateUrl ? [replicateUrl] : [],
+      cdn_url
+    } as const;
+  }
+
+  if (status === "failed" || status === "canceled") {
+    return { status, error: pred.error || null } as const;
+  }
+
+  return { status: "processing" } as const;
+}
+
 // ---------- Main ----------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
@@ -64,62 +130,47 @@ export default async function handler(req: Request) {
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, ...corsWithOrigin(origin) });
   }
-  if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
-  }
 
   try {
-    const { get_url } = await req.json();
-    if (!get_url) {
-      return new Response(JSON.stringify({ error: "Missing get_url" }), {
-        status: 400, ...corsWithOrigin(origin)
-      });
+    // Preferred: GET /api/poll?id=...
+    if (req.method === "GET") {
+      const { searchParams } = new URL(req.url);
+      const id = searchParams.get("id");
+      if (!id) {
+        // Back-compat: allow get_url in query (legacy)
+        const get_url = searchParams.get("get_url");
+        if (!get_url) {
+          return new Response(JSON.stringify({ error: "Missing id" }), {
+            status: 200, ...corsWithOrigin(origin)
+          });
+        }
+        const data = await pollByGetUrl(get_url);
+        return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
+      }
+
+      const data = await pollById(id);
+      return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
     }
 
-    const r = await fetch(get_url, {
-      headers: { "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}` }
-    });
-
-    const p = await r.json();
-
-    // Still processing -> just relay status
-    if (p.status !== "succeeded") {
-      return new Response(JSON.stringify({ status: p.status || "processing" }), {
-        status: 200, ...corsWithOrigin(origin)
-      });
+    // Legacy support: POST with { get_url }
+    if (req.method === "POST") {
+      const body = await req.json().catch(() => ({}));
+      const get_url: string | undefined = body.get_url;
+      if (!get_url) {
+        return new Response(JSON.stringify({ error: "Missing get_url" }), {
+          status: 200, ...corsWithOrigin(origin)
+        });
+      }
+      const data = await pollByGetUrl(get_url);
+      return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
     }
 
-    // Succeeded -> extract best URL from any output shape
-    const replicateUrl = pickUrl(p.output);
-    if (!replicateUrl) {
-      return new Response(JSON.stringify({ status: "failed", error: "No output URL" }), {
-        status: 200, ...corsWithOrigin(origin)
-      });
-    }
-
-    // Upload final image to Cloudinary for stability
-    let cdnUrl: string | null = null;
-    try {
-      cdnUrl = await uploadResultToCloudinary(replicateUrl);
-    } catch (e) {
-      // If Cloudinary upload fails, still return the Replicate URL so frontend can fall back
-      console.warn("Cloudinary upload failed in poll:", e);
-    }
-
-    return new Response(
-      JSON.stringify({
-        status: "succeeded",
-        result_url: replicateUrl, // original Replicate URL
-        cdn_url: cdnUrl           // stable Cloudinary URL (preferred for display)
-      }),
-      { status: 200, ...corsWithOrigin(origin) }
-    );
-
+    return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
   } catch (err: any) {
     console.error("Poll server error:", err);
-    return new Response(
-      JSON.stringify({ error: "Server error", details: String(err) }),
-      { status: 500, ...corsWithOrigin(origin) }
-    );
+    // Always return a pollable shape so the client keeps waiting
+    return new Response(JSON.stringify({ status: "processing" }), {
+      status: 200, ...corsWithOrigin(origin)
+    });
   }
 }
