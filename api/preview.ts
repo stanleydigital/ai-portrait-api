@@ -65,7 +65,7 @@ export default async function handler(req: Request) {
     const wantsCustom =
       (typeof sizeRaw === "string" && sizeRaw.toLowerCase() === "custom") || hasWH;
 
-    const W = typeof widthRaw !== "undefined" ? clamp(Number(widthRaw)) : 4096;
+    const W = typeof widthRaw !== "undefined" ? clamp(Number(widthRaw)) : 3072;
     const H = typeof heightRaw !== "undefined" ? clamp(Number(heightRaw)) : 4096;
 
     const input: Record<string, any> = {
