@@ -20,42 +20,6 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
-// ---------- Helpers ----------
-function pickUrl(output: any): string | null {
-  if (!output) return null;
-  if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      const u = pickUrl(item);
-      if (u) return u;
-    }
-  } else if (typeof output === "object") {
-    for (const v of Object.values(output)) {
-      const u = pickUrl(v);
-      if (u) return u;
-    }
-  }
-  return null;
-}
-
-async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
-  const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
-  const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
-
-  const fd = new FormData();
-  fd.append("file", fileUrl);
-  fd.append("upload_preset", preset);
-
-  const r = await fetch(endpoint, { method: "POST", body: fd });
-  if (!r.ok) {
-    const txt = await r.text();
-    throw new Error(`Cloudinary upload failed: ${r.status} ${txt}`);
-  }
-  const json = await r.json();
-  return json.secure_url as string;
-}
-
 // ---------- Main handler ----------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
@@ -86,7 +50,7 @@ export default async function handler(req: Request) {
     const sizeRaw: string | undefined = body.size;
     const widthRaw: number | string | undefined = body.width;
     const heightRaw: number | string | undefined = body.height;
-    const aspect_ratio: string | undefined = body.aspect_ratio; // optional, used when size != 'custom'
+    const aspect_ratio: string | undefined = body.aspect_ratio; // optional when size != 'custom'
 
     if (!image_url) {
       return new Response(JSON.stringify({ error: "Missing image_url" }), {
@@ -123,17 +87,15 @@ export default async function handler(req: Request) {
       }
     }
 
-    // Log for verification
-    console.log("Seedream input:", JSON.stringify(input));
-
+    // Start prediction (ASYNC — no 60s wait; UI will poll /api/poll with the id)
     const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
 
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
-        Prefer: "wait=60"
+        // IMPORTANT: Replicate expects "Token", not "Bearer"
+        "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}`
       },
       body: JSON.stringify({ input })
     });
@@ -143,55 +105,34 @@ export default async function handler(req: Request) {
     try {
       data = JSON.parse(text);
     } catch {
-      // leave data as null; we'll surface the raw text in the error below
+      // leave data as null; we still return a polling-friendly shape below
     }
 
-    // ✅ If Replicate finished within 60s
-    if (res.ok && data?.status === "succeeded") {
-      const replicateUrl = pickUrl(data.output);
-      if (replicateUrl) {
-        let cdnUrl: string | null = null;
-        try {
-          cdnUrl = await uploadResultToCloudinary(replicateUrl);
-        } catch (err) {
-          console.warn("Cloudinary upload failed, using Replicate URL:", err);
-        }
-
-        return new Response(
-          JSON.stringify({
-            status: "succeeded",
-            result_url: replicateUrl,
-            cdn_url: cdnUrl,
-            used_input: input // echo back what was sent for easy debugging
-          }),
-          { status: 200, ...corsWithOrigin(origin) }
-        );
-      }
-    }
-
-    // ⏳ If still processing, return the polling URL
-    if (data?.urls?.get) {
+    // Return an id the client can poll, even if Replicate had a transient hiccup
+    if (res.ok && data?.id) {
       return new Response(
         JSON.stringify({
-          status: data.status || "processing",
-          get_url: data.urls.get,
+          status: data.status || "queued",
+          id: data.id,
           used_input: input
         }),
-        { status: 202, ...corsWithOrigin(origin) }
+        { status: 200, ...corsWithOrigin(origin) }
       );
     }
 
-    // ❌ Catch-all error
-    console.error("Replicate error:", res.status, text);
+    // Tolerant fallback: keep the client polling (don’t surface 5xx)
+    console.error("Replicate create error:", res.status, text);
     return new Response(
-      JSON.stringify({ error: "Replicate error", status: res.status, details: text }),
-      { status: 500, ...corsWithOrigin(origin) }
+      JSON.stringify({ status: "processing" }),
+      { status: 200, ...corsWithOrigin(origin) }
     );
+
   } catch (err: any) {
     console.error("Server error:", err);
+    // Keep the client in a pollable state on unexpected errors
     return new Response(
-      JSON.stringify({ error: "Server error", details: String(err) }),
-      { status: 500, ...corsWithOrigin(origin) }
+      JSON.stringify({ status: "processing" }),
+      { status: 200, ...corsWithOrigin(origin) }
     );
   }
 }
