@@ -66,7 +66,11 @@ export default async function handler(req: Request) {
 
   if (req.method === "GET") {
     return new Response(
-      JSON.stringify({ ok: true, hint: "POST JSON { image_url, style }" }),
+      JSON.stringify({
+        ok: true,
+        hint:
+          "POST JSON { image_url, style, size?: '1K'|'2K'|'4K'|'custom', width?: 1024-4096, height?: 1024-4096, aspect_ratio?: 'match_input_image'|'1:1'|'16:9'|... }"
+      }),
       { status: 200, ...corsWithOrigin(origin) }
     );
   }
@@ -76,19 +80,51 @@ export default async function handler(req: Request) {
   }
 
   try {
-    const { image_url, style } = await req.json();
+    const body = await req.json();
+    const image_url: string | undefined = body.image_url;
+    const style: string | undefined = body.style;
+    const sizeRaw: string | undefined = body.size;
+    const widthRaw: number | string | undefined = body.width;
+    const heightRaw: number | string | undefined = body.height;
+    const aspect_ratio: string | undefined = body.aspect_ratio; // optional, used when size != 'custom'
+
     if (!image_url) {
       return new Response(JSON.stringify({ error: "Missing image_url" }), {
-        status: 400, ...corsWithOrigin(origin)
+        status: 400,
+        ...corsWithOrigin(origin)
       });
     }
 
-    // --- Build the input for Seedream 4 ---
+    // Build Seedream input
+    const clamp = (n: number) => Math.max(1024, Math.min(4096, Math.floor(n)));
+    const hasWH = typeof widthRaw !== "undefined" || typeof heightRaw !== "undefined";
+    const wantsCustom =
+      (typeof sizeRaw === "string" && sizeRaw.toLowerCase() === "custom") || hasWH;
+
+    const W = typeof widthRaw !== "undefined" ? clamp(Number(widthRaw)) : 4096;
+    const H = typeof heightRaw !== "undefined" ? clamp(Number(heightRaw)) : 4096;
+
     const input: Record<string, any> = {
       prompt: `${(style || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`,
-      image_input: [image_url],
-      size: "4K"
+      image_input: [image_url]
     };
+
+    if (wantsCustom) {
+      input.size = "custom";
+      input.width = W;
+      input.height = H;
+    } else {
+      // Default to 4K if not provided
+      const normalized = String(sizeRaw || "4K").toUpperCase();
+      input.size = normalized === "1K" || normalized === "2K" || normalized === "4K" ? normalized : "4K";
+      // aspect_ratio is only used when size is NOT 'custom'
+      if (typeof aspect_ratio === "string" && aspect_ratio.trim()) {
+        input.aspect_ratio = aspect_ratio.trim();
+      }
+    }
+
+    // Log for verification
+    console.log("Seedream input:", JSON.stringify(input));
 
     const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
 
@@ -96,15 +132,19 @@ export default async function handler(req: Request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}`,
-        "Prefer": "wait=60"
+        Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+        Prefer: "wait=60"
       },
       body: JSON.stringify({ input })
     });
 
     const text = await res.text();
     let data: any = null;
-    try { data = JSON.parse(text); } catch {}
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // leave data as null; we'll surface the raw text in the error below
+    }
 
     // ✅ If Replicate finished within 60s
     if (res.ok && data?.status === "succeeded") {
@@ -118,7 +158,12 @@ export default async function handler(req: Request) {
         }
 
         return new Response(
-          JSON.stringify({ result_url: replicateUrl, cdn_url: cdnUrl, status: "succeeded" }),
+          JSON.stringify({
+            status: "succeeded",
+            result_url: replicateUrl,
+            cdn_url: cdnUrl,
+            used_input: input // echo back what was sent for easy debugging
+          }),
           { status: 200, ...corsWithOrigin(origin) }
         );
       }
@@ -127,7 +172,11 @@ export default async function handler(req: Request) {
     // ⏳ If still processing, return the polling URL
     if (data?.urls?.get) {
       return new Response(
-        JSON.stringify({ get_url: data.urls.get, status: data.status || "processing" }),
+        JSON.stringify({
+          status: data.status || "processing",
+          get_url: data.urls.get,
+          used_input: input
+        }),
         { status: 202, ...corsWithOrigin(origin) }
       );
     }
@@ -138,7 +187,6 @@ export default async function handler(req: Request) {
       JSON.stringify({ error: "Replicate error", status: res.status, details: text }),
       { status: 500, ...corsWithOrigin(origin) }
     );
-
   } catch (err: any) {
     console.error("Server error:", err);
     return new Response(
