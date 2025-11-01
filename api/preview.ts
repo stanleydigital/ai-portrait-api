@@ -90,15 +90,18 @@ export default async function handler(req: Request) {
       console.error("Non-JSON response from Replicate:", text);
     }
 
-    // replace your success return in preview.ts with this:
-return new Response(
-  JSON.stringify({
-    id: data.id,
-    status: data.status || "queued",
-    echo: input   // 👈 shows the exact fields sent to Replicate
-  }),
-  { status: 200, ...cors(origin) }
-);
+    // after calling Replicate and parsing `data`
+if (replicateRes.ok && data?.id) {
+  return new Response(
+    JSON.stringify({
+      id: data.id,
+      status: data.status || "queued",
+      get_url: data?.urls?.get || null,   // 👈 add this
+      echo: input                          // keep this while debugging
+    }),
+    { status: 200, ...cors(origin) }
+  );
+}
 
 
     }
