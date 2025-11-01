@@ -90,17 +90,16 @@ export default async function handler(req: Request) {
       console.error("Non-JSON response from Replicate:", text);
     }
 
-    // --- Success: return prediction id for polling ---
-    if (replicateRes.ok && data?.id) {
-      console.log("✅ Started Replicate job", data.id, "with input:", input);
-      return new Response(
+    // replace your success return in preview.ts with this:
+return new Response(
   JSON.stringify({
     id: data.id,
     status: data.status || "queued",
-    echo: input  // 👈 shows what we sent to Replicate
+    echo: input   // 👈 shows the exact fields sent to Replicate
   }),
   { status: 200, ...cors(origin) }
 );
+
 
     }
 
