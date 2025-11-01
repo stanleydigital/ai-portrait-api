@@ -94,12 +94,14 @@ export default async function handler(req: Request) {
     if (replicateRes.ok && data?.id) {
       console.log("✅ Started Replicate job", data.id, "with input:", input);
       return new Response(
-        JSON.stringify({
-          id: data.id,
-          status: data.status || "queued"
-        }),
-        { status: 200, ...cors(origin) }
-      );
+  JSON.stringify({
+    id: data.id,
+    status: data.status || "queued",
+    echo: input  // 👈 shows what we sent to Replicate
+  }),
+  { status: 200, ...cors(origin) }
+);
+
     }
 
     // --- Error: forward Replicate's message to client ---
