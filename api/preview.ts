@@ -4,10 +4,10 @@ export const config = { runtime: "edge" };
 const ALLOWED_ORIGINS = new Set([
   "https://pawinci.com",
   "https://www.pawinci.com",
-  "https://pawincistore.myshopify.com" // keep for Shopify theme editor
+  "https://pawincistore.myshopify.com" // Shopify theme editor
 ]);
 
-function corsWithOrigin(origin: string | null) {
+function cors(origin: string | null) {
   const allowed = origin && ALLOWED_ORIGINS.has(origin) ? origin : "";
   return {
     headers: {
@@ -24,88 +24,96 @@ function corsWithOrigin(origin: string | null) {
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
 
+  // --- CORS preflight ---
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 200, ...corsWithOrigin(origin) });
+    return new Response("ok", { status: 200, ...cors(origin) });
   }
 
+  // --- Optional health check ---
   if (req.method === "GET") {
     return new Response(
       JSON.stringify({
         ok: true,
-        hint:
-          "POST JSON { imageUrl or image_url, prompt or style } — fixed size 3072x4096 is applied on the server."
+        hint: "POST JSON { imageUrl, prompt } to start generation."
       }),
-      { status: 200, ...corsWithOrigin(origin) }
+      { status: 200, ...cors(origin) }
     );
   }
 
   if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
+    return new Response("Method not allowed", { status: 405, ...cors(origin) });
   }
 
   try {
-    const body = await req.json().catch(() => ({} as any));
+    const body = await req.json().catch(() => ({}));
 
-    // Accept both camelCase and snake_case from the client
-    const image_url: string | undefined = body.image_url || body.imageUrl;
-    const rawPrompt: string | undefined = body.prompt ?? body.style;
+    // --- Normalize client input ---
+    const imageUrl: string | undefined = body.imageUrl || body.image_url;
+    const prompt: string = (body.prompt || body.style || "").trim();
 
-    if (!image_url) {
-      return new Response(JSON.stringify({ error: "Missing image_url" }), {
+    if (!imageUrl) {
+      return new Response(JSON.stringify({ error: "Missing imageUrl" }), {
         status: 400,
-        ...corsWithOrigin(origin)
+        ...cors(origin)
       });
     }
 
-    // Build Seedream-4 input: must be image_url; fix size to 3072x4096
+    // --- Build Seedream-4 input exactly as required ---
     const input: Record<string, any> = {
-      image_url,
-      prompt: `${(rawPrompt || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`.trim(),
+      image_url: imageUrl, // Replicate expects `image_url`
+      prompt: prompt.length
+        ? prompt
+        : "Portrait of a pet, preserve exact identity and details.",
       size: "custom",
       width: 3072,
       height: 4096
     };
 
-    // Start prediction (async; client will poll /api/poll with the returned id)
-    const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
+    // --- Call Replicate ---
+    const replicateUrl =
+      "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
 
-    const res = await fetch(url, {
+    const replicateRes = await fetch(replicateUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Replicate expects "Token", not "Bearer"
         "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}`
       },
       body: JSON.stringify({ input })
     });
 
-    const text = await res.text();
+    const text = await replicateRes.text();
     let data: any = null;
-    try { data = JSON.parse(text); } catch {}
+    try {
+      data = JSON.parse(text);
+    } catch {
+      console.error("Non-JSON response from Replicate:", text);
+    }
 
-    if (res.ok && data?.id) {
+    // --- Success: return prediction id for polling ---
+    if (replicateRes.ok && data?.id) {
+      console.log("✅ Started Replicate job", data.id, "with input:", input);
       return new Response(
         JSON.stringify({
-          status: data.status || "queued",
           id: data.id,
-          used_input: input
+          status: data.status || "queued"
         }),
-        { status: 200, ...corsWithOrigin(origin) }
+        { status: 200, ...cors(origin) }
       );
     }
 
-    // Bubble up Replicate's error so the preview page can display it
-    const errMsg = data?.error || text || `Replicate error ${res.status}`;
+    // --- Error: forward Replicate's message to client ---
+    const errMsg = data?.error || text || `Replicate error ${replicateRes.status}`;
+    console.error("Replicate error:", errMsg);
     return new Response(JSON.stringify({ error: errMsg }), {
-      status: res.status || 500,
-      ...corsWithOrigin(origin)
+      status: replicateRes.status || 500,
+      ...cors(origin)
     });
-
   } catch (err: any) {
     console.error("Server error:", err);
     return new Response(JSON.stringify({ error: err?.message || "preview_failed" }), {
       status: 500,
-      ...corsWithOrigin(origin)
+      ...cors(origin)
     });
   }
 }
