@@ -48,26 +48,36 @@ export default async function handler(req: Request) {
     const body = await req.json().catch(() => ({}));
 
     // --- Normalize client input ---
-    const imageUrl: string | undefined = body.imageUrl || body.image_url;
-    const prompt: string = (body.prompt || body.style || "").trim();
+const imageUrl: string | undefined = body.imageUrl || body.image_url;
+const prompt: string = (body.prompt || body.style || "").trim();
 
-    if (!imageUrl) {
-      return new Response(JSON.stringify({ error: "Missing imageUrl" }), {
-        status: 400,
-        ...cors(origin)
-      });
-    }
+if (!imageUrl) {
+  return new Response(JSON.stringify({ error: "Missing imageUrl" }), {
+    status: 400,
+    ...cors(origin)
+  });
+}
 
-    // --- Build Seedream-4 input exactly as required ---
-    const input: Record<string, any> = {
-      image_url: imageUrl, // Replicate expects `image_url`
-      prompt: prompt.length
-        ? prompt
-        : "Portrait of a pet, preserve exact identity and details.",
-      size: "custom",
-      width: 3072,
-      height: 4096
-    };
+// Stronger prompt to avoid generic results
+const finalPrompt =
+  (prompt ? prompt + " " : "") +
+  "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
+
+// ✅ Send ALL commonly accepted keys so any Seedream build uses the image & text
+const input: Record<string, any> = {
+  // image
+  image_input: [imageUrl],   // <-- primary key many Seedream-4 builds require
+  image_url: imageUrl,       // <-- secondary (harmless backup)
+  // text
+  prompt: finalPrompt,       // standard
+  style: finalPrompt,        // alt
+  text_prompt: finalPrompt,  // alt
+  // size
+  size: "custom",
+  width: 3072,
+  height: 4096
+};
+
 
     // --- Call Replicate ---
     const replicateUrl =
