@@ -14,7 +14,7 @@ function corsWithOrigin(origin: string | null) {
       "Content-Type": "application/json",
       ...(allowed ? { "Access-Control-Allow-Origin": allowed } : {}),
       "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type,Authorization",
       "Vary": "Origin"
     }
   };
@@ -33,7 +33,7 @@ export default async function handler(req: Request) {
       JSON.stringify({
         ok: true,
         hint:
-          "POST JSON { image_url, style, size?: '1K'|'2K'|'4K'|'custom', width?: 1024-4096, height?: 1024-4096, aspect_ratio?: 'match_input_image'|'1:1'|'16:9'|... }"
+          "POST JSON { imageUrl or image_url, prompt or style } — fixed size 3072x4096 is applied on the server."
       }),
       { status: 200, ...corsWithOrigin(origin) }
     );
@@ -44,13 +44,11 @@ export default async function handler(req: Request) {
   }
 
   try {
-    const body = await req.json();
-    const image_url: string | undefined = body.image_url;
-    const style: string | undefined = body.style;
-    const sizeRaw: string | undefined = body.size;
-    const widthRaw: number | string | undefined = body.width;
-    const heightRaw: number | string | undefined = body.height;
-    const aspect_ratio: string | undefined = body.aspect_ratio; // optional when size != 'custom'
+    const body = await req.json().catch(() => ({} as any));
+
+    // Accept both camelCase and snake_case from the client
+    const image_url: string | undefined = body.image_url || body.imageUrl;
+    const rawPrompt: string | undefined = body.prompt ?? body.style;
 
     if (!image_url) {
       return new Response(JSON.stringify({ error: "Missing image_url" }), {
@@ -59,42 +57,23 @@ export default async function handler(req: Request) {
       });
     }
 
-    // Build Seedream input
-    const clamp = (n: number) => Math.max(1024, Math.min(4096, Math.floor(n)));
-    const hasWH = typeof widthRaw !== "undefined" || typeof heightRaw !== "undefined";
-    const wantsCustom =
-      (typeof sizeRaw === "string" && sizeRaw.toLowerCase() === "custom") || hasWH;
-
-    const W = typeof widthRaw !== "undefined" ? clamp(Number(widthRaw)) : 3072;
-    const H = typeof heightRaw !== "undefined" ? clamp(Number(heightRaw)) : 4096;
-
+    // Build Seedream-4 input: must be image_url; fix size to 3072x4096
     const input: Record<string, any> = {
-      prompt: `${(style || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`,
-      image_input: [image_url]
+      image_url,
+      prompt: `${(rawPrompt || "").trim()} Preserve the exact identity from the uploaded photo (same markings, colors, and features).`.trim(),
+      size: "custom",
+      width: 3072,
+      height: 4096
     };
 
-    if (wantsCustom) {
-      input.size = "custom";
-      input.width = W;
-      input.height = H;
-    } else {
-      // Default to 4K if not provided
-      const normalized = String(sizeRaw || "4K").toUpperCase();
-      input.size = normalized === "1K" || normalized === "2K" || normalized === "4K" ? normalized : "4K";
-      // aspect_ratio is only used when size is NOT 'custom'
-      if (typeof aspect_ratio === "string" && aspect_ratio.trim()) {
-        input.aspect_ratio = aspect_ratio.trim();
-      }
-    }
-
-    // Start prediction (ASYNC — no 60s wait; UI will poll /api/poll with the id)
+    // Start prediction (async; client will poll /api/poll with the returned id)
     const url = "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
 
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // IMPORTANT: Replicate expects "Token", not "Bearer"
+        // Replicate expects "Token", not "Bearer"
         "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}`
       },
       body: JSON.stringify({ input })
@@ -102,13 +81,8 @@ export default async function handler(req: Request) {
 
     const text = await res.text();
     let data: any = null;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      // leave data as null; we still return a polling-friendly shape below
-    }
+    try { data = JSON.parse(text); } catch {}
 
-    // Return an id the client can poll, even if Replicate had a transient hiccup
     if (res.ok && data?.id) {
       return new Response(
         JSON.stringify({
@@ -120,19 +94,18 @@ export default async function handler(req: Request) {
       );
     }
 
-    // Tolerant fallback: keep the client polling (don’t surface 5xx)
-    console.error("Replicate create error:", res.status, text);
-    return new Response(
-      JSON.stringify({ status: "processing" }),
-      { status: 200, ...corsWithOrigin(origin) }
-    );
+    // Bubble up Replicate's error so the preview page can display it
+    const errMsg = data?.error || text || `Replicate error ${res.status}`;
+    return new Response(JSON.stringify({ error: errMsg }), {
+      status: res.status || 500,
+      ...corsWithOrigin(origin)
+    });
 
   } catch (err: any) {
     console.error("Server error:", err);
-    // Keep the client in a pollable state on unexpected errors
-    return new Response(
-      JSON.stringify({ status: "processing" }),
-      { status: 200, ...corsWithOrigin(origin) }
-    );
+    return new Response(JSON.stringify({ error: err?.message || "preview_failed" }), {
+      status: 500,
+      ...corsWithOrigin(origin)
+    });
   }
 }
