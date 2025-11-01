@@ -61,17 +61,23 @@ async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
 const uploadedOnce = new Set<string>();
 
 // ---------- Poll helpers ----------
-async function pollById(id: string) {
+async function pollById(id: string, debug = false) {
   const r = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
     headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
   });
 
   if (!r.ok) {
-    // transient hiccup → keep client polling
-    return { status: "processing", id } as const;
+    const txt = await r.text();
+    return { status: "failed", id, error: `Replicate fetch failed: ${r.status} ${txt}` } as const;
   }
 
   const pred = await r.json();
+
+  // 🔍 Debug mode: return raw Replicate payload (no Cloudinary upload)
+  if (debug) {
+    return { status: pred.status, raw: pred } as const;
+  }
+
   const status = (pred.status || "").toLowerCase();
 
   if (status === "succeeded") {
@@ -107,21 +113,25 @@ async function pollById(id: string) {
   return { status: "processing", id } as const;
 }
 
-async function pollByGetUrl(get_url: string) {
+async function pollByGetUrl(get_url: string, debug = false) {
   const r = await fetch(get_url, {
     headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
   });
 
-  if (!r.ok) return { status: "processing" } as const;
+  if (!r.ok) return { status: "failed", error: `Replicate fetch failed: ${r.status}` } as const;
 
   const pred = await r.json();
+
+  if (debug) {
+    return { status: pred.status, raw: pred } as const;
+  }
+
   const status = (pred.status || "").toLowerCase();
 
   if (status === "succeeded") {
     const replicateUrl = pickUrl(pred.output);
     let cdn_url: string | null = null;
 
-    // ✅ one-upload guard for legacy flow too
     const id = pred.id || get_url;
     if (uploadedOnce.has(id)) {
       console.log("⏩ Skipping duplicate upload for", id);
@@ -157,49 +167,44 @@ export default async function handler(req: Request) {
   }
 
   try {
-    // Preferred: GET /api/poll?id=...
     if (req.method === "GET") {
       const { searchParams } = new URL(req.url);
       const id = searchParams.get("id");
+      const debug = searchParams.get("debug") === "1"; // 🔍 toggle
 
       if (!id) {
-        // Legacy: allow get_url in query
         const get_url = searchParams.get("get_url");
         if (!get_url) {
           return new Response(JSON.stringify({ error: "Missing id" }), {
-            status: 200,
-            ...corsWithOrigin(origin)
+            status: 200, ...corsWithOrigin(origin)
           });
         }
-        const data = await pollByGetUrl(get_url);
+        const data = await pollByGetUrl(get_url, debug);
         return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
       }
 
-      const data = await pollById(id);
+      const data = await pollById(id, debug);
       return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
     }
 
-    // Legacy support: POST with { get_url }
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       const get_url: string | undefined = body.get_url;
+      const debug = body.debug === true;
       if (!get_url) {
         return new Response(JSON.stringify({ error: "Missing get_url" }), {
-          status: 200,
-          ...corsWithOrigin(origin)
+          status: 200, ...corsWithOrigin(origin)
         });
       }
-      const data = await pollByGetUrl(get_url);
+      const data = await pollByGetUrl(get_url, debug);
       return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
     }
 
     return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
   } catch (err: any) {
     console.error("Poll server error:", err);
-    // Always return a pollable shape so the client keeps waiting
     return new Response(JSON.stringify({ status: "processing" }), {
-      status: 200,
-      ...corsWithOrigin(origin)
+      status: 200, ...corsWithOrigin(origin)
     });
   }
 }
