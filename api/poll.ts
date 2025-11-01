@@ -20,7 +20,7 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
-// ---------- Helpers ----------
+// ---------- Helper: recursively find a URL in Replicate output ----------
 function pickUrl(output: any): string | null {
   if (!output) return null;
   if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
@@ -38,13 +38,14 @@ function pickUrl(output: any): string | null {
   return null;
 }
 
+// ---------- Cloudinary upload helper ----------
 async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
 
   const fd = new FormData();
-  fd.append("file", fileUrl);          // remote URL from Replicate
+  fd.append("file", fileUrl); // remote URL from Replicate
   fd.append("upload_preset", preset);
 
   const r = await fetch(endpoint, { method: "POST", body: fd });
@@ -53,9 +54,13 @@ async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
     throw new Error(`Cloudinary upload failed: ${r.status} ${txt}`);
   }
   const json = await r.json();
-  return json.secure_url as string;    // stable CDN URL
+  return json.secure_url as string; // stable CDN URL
 }
 
+// ---------- Track uploads to avoid duplicates ----------
+const uploadedOnce = new Set<string>();
+
+// ---------- Poll helpers ----------
 async function pollById(id: string) {
   const r = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
     headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
@@ -72,10 +77,20 @@ async function pollById(id: string) {
   if (status === "succeeded") {
     const replicateUrl = pickUrl(pred.output);
     let cdn_url: string | null = null;
-    if (replicateUrl) {
-      try { cdn_url = await uploadResultToCloudinary(replicateUrl); }
-      catch (e) { console.warn("Cloudinary upload failed (fallback to Replicate URL):", e); }
+
+    // ✅ upload only once per prediction ID
+    if (uploadedOnce.has(id)) {
+      console.log("⏩ Skipping duplicate upload for", id);
+    } else if (replicateUrl) {
+      try {
+        cdn_url = await uploadResultToCloudinary(replicateUrl);
+        uploadedOnce.add(id);
+        console.log("✅ Uploaded once to Cloudinary:", id);
+      } catch (e) {
+        console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
+      }
     }
+
     return {
       status: "succeeded",
       id,
@@ -105,10 +120,20 @@ async function pollByGetUrl(get_url: string) {
   if (status === "succeeded") {
     const replicateUrl = pickUrl(pred.output);
     let cdn_url: string | null = null;
-    if (replicateUrl) {
-      try { cdn_url = await uploadResultToCloudinary(replicateUrl); }
-      catch (e) { console.warn("Cloudinary upload failed (fallback to Replicate URL):", e); }
+
+    // ✅ one-upload guard for legacy flow too
+    const id = pred.id || get_url;
+    if (uploadedOnce.has(id)) {
+      console.log("⏩ Skipping duplicate upload for", id);
+    } else if (replicateUrl) {
+      try {
+        cdn_url = await uploadResultToCloudinary(replicateUrl);
+        uploadedOnce.add(id);
+      } catch (e) {
+        console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
+      }
     }
+
     return {
       status: "succeeded",
       output: replicateUrl ? [replicateUrl] : [],
@@ -123,7 +148,7 @@ async function pollByGetUrl(get_url: string) {
   return { status: "processing" } as const;
 }
 
-// ---------- Main ----------
+// ---------- Main handler ----------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
 
@@ -136,12 +161,14 @@ export default async function handler(req: Request) {
     if (req.method === "GET") {
       const { searchParams } = new URL(req.url);
       const id = searchParams.get("id");
+
       if (!id) {
-        // Back-compat: allow get_url in query (legacy)
+        // Legacy: allow get_url in query
         const get_url = searchParams.get("get_url");
         if (!get_url) {
           return new Response(JSON.stringify({ error: "Missing id" }), {
-            status: 200, ...corsWithOrigin(origin)
+            status: 200,
+            ...corsWithOrigin(origin)
           });
         }
         const data = await pollByGetUrl(get_url);
@@ -158,7 +185,8 @@ export default async function handler(req: Request) {
       const get_url: string | undefined = body.get_url;
       if (!get_url) {
         return new Response(JSON.stringify({ error: "Missing get_url" }), {
-          status: 200, ...corsWithOrigin(origin)
+          status: 200,
+          ...corsWithOrigin(origin)
         });
       }
       const data = await pollByGetUrl(get_url);
@@ -170,7 +198,8 @@ export default async function handler(req: Request) {
     console.error("Poll server error:", err);
     // Always return a pollable shape so the client keeps waiting
     return new Response(JSON.stringify({ status: "processing" }), {
-      status: 200, ...corsWithOrigin(origin)
+      status: 200,
+      ...corsWithOrigin(origin)
     });
   }
 }
