@@ -8,7 +8,7 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 
 function cors(origin: string | null) {
-  const allowed = origin && ALLOWED_ORIGINS.has(origin) ? origin : "";
+  const allowed = origin && ALLOWED_ORIGINS.has(origin) ? origin : ""; 
   return {
     headers: {
       "Content-Type": "application/json",
