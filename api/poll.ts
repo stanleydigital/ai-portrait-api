@@ -39,7 +39,7 @@ function pickUrl(output: any): string | null {
 }
 
 // ---------- Cloudinary upload helper ----------
-async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
+async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
@@ -47,6 +47,8 @@ async function uploadResultToCloudinary(fileUrl: string): Promise<string> {
   const fd = new FormData();
   fd.append("file", fileUrl); // remote URL from Replicate
   fd.append("upload_preset", preset);
+  fd.append("public_id", `results/${predictionId}`); // Unique ID prevents duplicates
+  fd.append("overwrite", "false"); // Don't overwrite if exists
 
   const r = await fetch(endpoint, { method: "POST", body: fd });
   if (!r.ok) {
@@ -81,21 +83,18 @@ async function pollById(id: string, debug = false) {
   const status = (pred.status || "").toLowerCase();
 
   if (status === "succeeded") {
-    const replicateUrl = pickUrl(pred.output);
-    let cdn_url: string | null = null;
+  const replicateUrl = pickUrl(pred.output);
+  let cdn_url: string | null = null;
 
-    // ✅ upload only once per prediction ID
-    if (uploadedOnce.has(id)) {
-      console.log("⏩ Skipping duplicate upload for", id);
-    } else if (replicateUrl) {
-      try {
-        cdn_url = await uploadResultToCloudinary(replicateUrl);
-        uploadedOnce.add(id);
-        console.log("✅ Uploaded once to Cloudinary:", id);
-      } catch (e) {
-        console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
-      }
+  if (replicateUrl) {
+    try {
+      // Use prediction ID as public_id - Cloudinary auto-deduplicates
+      cdn_url = await uploadResultToCloudinary(replicateUrl, id);
+      console.log("✅ Uploaded to Cloudinary:", id);
+    } catch (e) {
+      console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
     }
+  }
 
     return {
       status: "succeeded",
