@@ -20,7 +20,41 @@ function cors(origin: string | null) {
   };
 }
 
-// ---------- Main handler ----------
+// --------- RATE LIMITING ---------
+// Simple in-memory tracking (resets on redeploy, but good enough)
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(identifier: string, maxRequests = 5, windowMs = 3600000): boolean {
+  const now = Date.now();
+  const record = rateLimitMap.get(identifier);
+  
+  // If no record or window expired, reset
+  if (!record || now > record.resetAt) {
+    rateLimitMap.set(identifier, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  
+  // If limit exceeded
+  if (record.count >= maxRequests) {
+    return false;
+  }
+  
+  // Increment count
+  record.count++;
+  return true;
+}
+
+// Cleanup old entries every hour to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of rateLimitMap.entries()) {
+    if (now > record.resetAt) {
+      rateLimitMap.delete(key);
+    }
+  }
+}, 3600000); // 1 hour
+
+// --------- Main handler ---------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
 
@@ -45,39 +79,71 @@ export default async function handler(req: Request) {
   }
 
   try {
+    // --- Rate limiting: 5 generations per hour per IP ---
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() 
+               || req.headers.get("cf-connecting-ip") 
+               || "unknown";
+    
+    if (!checkRateLimit(ip, 20, 3600000)) {
+      return new Response(
+        JSON.stringify({ 
+          error: "Rate limit exceeded. You can generate 5 portraits per hour. Please try again later." 
+        }), 
+        { 
+          status: 429, 
+          ...cors(origin) 
+        }
+      );
+    }
+
     const body = await req.json().catch(() => ({}));
 
     // --- Normalize client input ---
-const imageUrl: string | undefined = body.imageUrl || body.image_url;
-const prompt: string = (body.prompt || body.style || "").trim();
+    const imageUrl: string | undefined = body.imageUrl || body.image_url;
+    const prompt: string = (body.prompt || body.style || "").trim();
 
-if (!imageUrl) {
-  return new Response(JSON.stringify({ error: "Missing imageUrl" }), {
-    status: 400,
-    ...cors(origin)
-  });
-}
+    if (!imageUrl) {
+      return new Response(JSON.stringify({ error: "Missing imageUrl" }), {
+        status: 400,
+        ...cors(origin)
+      });
+    }
 
-// Stronger prompt to avoid generic results
-const finalPrompt =
-  (prompt ? prompt + " " : "") +
-  "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
+    // Validate image URL (basic security check)
+    try {
+      const url = new URL(imageUrl);
+      if (!url.protocol.startsWith("http")) {
+        return new Response(JSON.stringify({ error: "Invalid image URL" }), {
+          status: 400,
+          ...cors(origin)
+        });
+      }
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid image URL format" }), {
+        status: 400,
+        ...cors(origin)
+      });
+    }
 
-// ✅ Send ALL commonly accepted keys so any Seedream build uses the image & text
-const input: Record<string, any> = {
-  // image
-  image_input: [imageUrl],   // <-- primary key many Seedream-4 builds require
-  image_url: imageUrl,       // <-- secondary (harmless backup)
-  // text
-  prompt: finalPrompt,       // standard
-  style: finalPrompt,        // alt
-  text_prompt: finalPrompt,  // alt
-  // size
-  size: "custom",
-  width: 3072,
-  height: 4096
-};
+    // Stronger prompt to avoid generic results
+    const finalPrompt =
+      (prompt ? prompt + " " : "") +
+      "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
 
+    // ✅ Send ALL commonly accepted keys so any Seedream build uses the image & text
+    const input: Record<string, any> = {
+      // image
+      image_input: [imageUrl], // <-- primary key many Seedream-4 builds require
+      image_url: imageUrl, // <-- secondary (harmless backup)
+      // text
+      prompt: finalPrompt, // standard
+      style: finalPrompt, // alt
+      text_prompt: finalPrompt, // alt
+      // size
+      size: "custom",
+      width: 3072,
+      height: 4096
+    };
 
     // --- Call Replicate ---
     const replicateUrl =
@@ -101,19 +167,16 @@ const input: Record<string, any> = {
     }
 
     // after calling Replicate and parsing `data`
-if (replicateRes.ok && data?.id) {
-  return new Response(
-    JSON.stringify({
-      id: data.id,
-      status: data.status || "queued",
-      get_url: data?.urls?.get || null,   // 👈 add this
-      echo: input                          // keep this while debugging
-    }),
-    { status: 200, ...cors(origin) }
-  );
-}
-
-
+    if (replicateRes.ok && data?.id) {
+      return new Response(
+        JSON.stringify({
+          id: data.id,
+          status: data.status || "queued",
+          get_url: data?.urls?.get || null,
+          echo: input // keep this while debugging
+        }),
+        { status: 200, ...cors(origin) }
+      );
     }
 
     // --- Error: forward Replicate's message to client ---
