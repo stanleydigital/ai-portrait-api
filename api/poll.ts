@@ -20,7 +20,7 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
-// ---------- Helper: recursively find a URL in Replicate output ----------
+// --------- Helper: recursively find a URL in Replicate output ---------
 function pickUrl(output: any): string | null {
   if (!output) return null;
   if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
@@ -38,7 +38,7 @@ function pickUrl(output: any): string | null {
   return null;
 }
 
-// ---------- Cloudinary upload helper ----------
+// --------- Cloudinary upload helper ---------
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
@@ -59,10 +59,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   return json.secure_url as string; // stable CDN URL
 }
 
-// ---------- Track uploads to avoid duplicates ----------
-const uploadedOnce = new Set<string>();
-
-// ---------- Poll helpers ----------
+// --------- Poll helpers ---------
 async function pollById(id: string, debug = false) {
   const r = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
     headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
@@ -83,18 +80,17 @@ async function pollById(id: string, debug = false) {
   const status = (pred.status || "").toLowerCase();
 
   if (status === "succeeded") {
-  const replicateUrl = pickUrl(pred.output);
-  let cdn_url: string | null = null;
+    const replicateUrl = pickUrl(pred.output);
+    let cdn_url: string | null = null;
 
-  if (replicateUrl) {
-    try {
-      // Use prediction ID as public_id - Cloudinary auto-deduplicates
-      cdn_url = await uploadResultToCloudinary(replicateUrl, id);
-      console.log("✅ Uploaded to Cloudinary:", id);
-    } catch (e) {
-      console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
+    if (replicateUrl) {
+      try {
+        cdn_url = await uploadResultToCloudinary(replicateUrl, id);
+        console.log("✅ Uploaded to Cloudinary:", id);
+      } catch (e) {
+        console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
+      }
     }
-  }
 
     return {
       status: "succeeded",
@@ -132,12 +128,11 @@ async function pollByGetUrl(get_url: string, debug = false) {
     let cdn_url: string | null = null;
 
     const id = pred.id || get_url;
-    if (uploadedOnce.has(id)) {
-      console.log("⏩ Skipping duplicate upload for", id);
-    } else if (replicateUrl) {
+    
+    if (replicateUrl) {
       try {
-        cdn_url = await uploadResultToCloudinary(replicateUrl);
-        uploadedOnce.add(id);
+        cdn_url = await uploadResultToCloudinary(replicateUrl, id);
+        console.log("✅ Uploaded to Cloudinary:", id);
       } catch (e) {
         console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
       }
@@ -157,7 +152,7 @@ async function pollByGetUrl(get_url: string, debug = false) {
   return { status: "processing" } as const;
 }
 
-// ---------- Main handler ----------
+// --------- Main handler ---------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
 
