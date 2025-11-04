@@ -1,4 +1,7 @@
 {
   "name": "ai-portrait-api",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@vercel/kv": "^1.0.0"
+  }
 }
