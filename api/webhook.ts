@@ -48,7 +48,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   fd.append("file", fileUrl);
   fd.append("upload_preset", preset);
   fd.append("public_id", `results/${predictionId}`);
-  fd.append("overwrite", "false");
+  
   
   const r = await fetch(endpoint, { method: "POST", body: fd });
   if (!r.ok) {
