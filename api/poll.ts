@@ -115,13 +115,13 @@ async function pollById(id: string, debug = false) {
   
   if (!r.ok) {
     const txt = await r.text();
-    return { status: "failed", id, error: `Replicate fetch failed: ${r.status} ${txt}` } as const;
+    return { status: "failed" as const, id, error: `Replicate fetch failed: ${r.status} ${txt}` };
   }
   
   const pred = await r.json();
   
   if (debug) {
-    return { status: pred.status, raw: pred } as const;
+    return { status: pred.status, raw: pred };
   }
   
   const status = (pred.status || "").toLowerCase();
@@ -140,7 +140,7 @@ async function pollById(id: string, debug = false) {
     }
     
     const result = {
-      status: "succeeded",
+      status: "succeeded" as const,
       id,
       output: replicateUrl ? [replicateUrl] : [],
       cdn_url
@@ -151,22 +151,22 @@ async function pollById(id: string, debug = false) {
       await kvClient.set(`prediction:${id}`, result, { ex: 86400 });
     }
     
-    return result as const;
+    return result;
   }
   
   if (status === "failed" || status === "canceled") {
-    const result = { status, id, error: pred.error || null };
+    const result = { status: status as "failed" | "canceled", id, error: pred.error || null };
     
     // Cache errors too
     if (kvClient) {
       await kvClient.set(`prediction:${id}`, result, { ex: 3600 });
     }
     
-    return result as const;
+    return result;
   }
   
   // Still processing
-  return { status: "processing", id } as const;
+  return { status: "processing" as const, id };
 }
 
 async function pollByGetUrl(get_url: string, debug = false) {
@@ -174,7 +174,7 @@ async function pollByGetUrl(get_url: string, debug = false) {
     headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
   });
   
-  if (!r.ok) return { status: "failed", error: `Replicate fetch failed: ${r.status}` } as const;
+  if (!r.ok) return { status: "failed" as const, error: `Replicate fetch failed: ${r.status}` };
   
   const pred = await r.json();
   const id = pred.id;
@@ -192,7 +192,7 @@ async function pollByGetUrl(get_url: string, debug = false) {
   }
   
   if (debug) {
-    return { status: pred.status, raw: pred } as const;
+    return { status: pred.status, raw: pred };
   }
   
   const status = (pred.status || "").toLowerCase();
@@ -211,7 +211,7 @@ async function pollByGetUrl(get_url: string, debug = false) {
     }
     
     const result = {
-      status: "succeeded",
+      status: "succeeded" as const,
       output: replicateUrl ? [replicateUrl] : [],
       cdn_url
     };
@@ -224,14 +224,14 @@ async function pollByGetUrl(get_url: string, debug = false) {
       }
     }
     
-    return result as const;
+    return result;
   }
   
   if (status === "failed" || status === "canceled") {
-    return { status, error: pred.error || null } as const;
+    return { status: status as "failed" | "canceled", error: pred.error || null };
   }
   
-  return { status: "processing" } as const;
+  return { status: "processing" as const };
 }
 
 // ------- Main handler -------
