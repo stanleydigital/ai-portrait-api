@@ -43,7 +43,7 @@ async function initKV() {
 // Fallback in-memory rate limiting (if KV not configured)
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
-async function checkRateLimit(identifier: string, maxRequests = 20, windowMs = 3600000): Promise<boolean> {
+async function checkRateLimit(identifier: string, maxRequests = 50, windowMs = 3600000): Promise<boolean> {
   const kvClient = await initKV();
   
   if (kvClient) {
@@ -105,7 +105,7 @@ export default async function handler(req: Request) {
       || req.headers.get("cf-connecting-ip")
       || "unknown";
     
-    if (!await checkRateLimit(ip, 20, 3600000)) {
+    if (!await checkRateLimit(ip, 50, 3600000)) {
       return new Response(
         JSON.stringify({
           error: "Rate limit exceeded. You can generate 20 portraits per hour. Please try again later."
