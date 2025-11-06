@@ -85,14 +85,43 @@ export default async function handler(req: Request) {
 
     if (!orderData && email) {
       const emailKey = `order:email:${email.toLowerCase()}`;
-      const foundOrderNumber = await kvClient.get(emailKey);
+      const foundOrderNumbers = await kvClient.get(emailKey);
       
-      if (foundOrderNumber) {
-        const orderKey = `order:${foundOrderNumber}`;
-        orderData = await kvClient.get(orderKey);
+      if (foundOrderNumbers) {
+        console.log("Found orders by email:", email, foundOrderNumbers);
         
-        if (orderData) {
-          console.log("Found order by email:", email);
+        // Handle multiple orders
+        if (Array.isArray(foundOrderNumbers)) {
+          // Get all orders for this email
+          const orders = [];
+          for (const orderNum of foundOrderNumbers) {
+            const orderKey = `order:${orderNum}`;
+            const order = await kvClient.get(orderKey);
+            if (order) {
+              orders.push(order);
+            }
+          }
+          
+          if (orders.length > 0) {
+            // Return all orders
+            return new Response(JSON.stringify({
+              ok: true,
+              multiple: true,
+              orders: orders,
+              count: orders.length
+            }), {
+              status: 200,
+              ...cors(origin)
+            });
+          }
+        } else {
+          // Legacy: single order number (for backward compatibility)
+          const orderKey = `order:${foundOrderNumbers}`;
+          orderData = await kvClient.get(orderKey);
+          
+          if (orderData) {
+            console.log("Found single order by email:", email);
+          }
         }
       }
     }
