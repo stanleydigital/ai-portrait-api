@@ -43,13 +43,24 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const apiKey = process.env.CLOUDINARY_API_KEY!;
   const apiSecret = process.env.CLOUDINARY_API_SECRET!;
-  const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
   
+  // Check cache first to avoid duplicate uploads
+  const kvClient = await initKV();
+  if (kvClient) {
+    const cacheKey = `cdn:${predictionId}`;
+    const cached = await kvClient.get(cacheKey);
+    if (cached) {
+      console.log("✅ Using cached Cloudinary URL:", predictionId);
+      return cached as string;
+    }
+  }
+  
+  const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
   const timestamp = Math.floor(Date.now() / 1000);
   const publicId = `results/${predictionId}`;
   
-  // Generate signature
-  const paramsToSign = {
+  // Generate signature for signed upload
+  const paramsToSign: Record<string, any> = {
     timestamp,
     public_id: publicId,
     folder: "results"
@@ -74,14 +85,21 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   fd.append("public_id", publicId);
   fd.append("folder", "results");
   
-  
   const r = await fetch(endpoint, { method: "POST", body: fd });
   if (!r.ok) {
     const txt = await r.text();
     throw new Error(`Cloudinary upload failed: ${r.status} ${txt}`);
   }
   const json = await r.json();
-  return json.secure_url as string;
+  const cdnUrl = json.secure_url as string;
+  
+  // Cache the result for 7 days
+  if (kvClient) {
+    await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
+    console.log("✅ Cached Cloudinary URL:", predictionId);
+  }
+  
+  return cdnUrl;
 }
 
 export default async function handler(req: Request) {
