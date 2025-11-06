@@ -41,13 +41,38 @@ function pickUrl(output: any): string | null {
 // Upload to Cloudinary
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
-  const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
+  const apiKey = process.env.CLOUDINARY_API_KEY!;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET!;
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
+  
+  const timestamp = Math.floor(Date.now() / 1000);
+  const publicId = `results/${predictionId}`;
+  
+  // Generate signature
+  const paramsToSign = {
+    timestamp,
+    public_id: publicId,
+    folder: "results"
+  };
+  
+  const sortedParams = Object.keys(paramsToSign)
+    .sort()
+    .map(key => `${key}=${paramsToSign[key]}`)
+    .join("&");
+  
+  const stringToSign = sortedParams + apiSecret;
+  const msgUint8 = new TextEncoder().encode(stringToSign);
+  const hashBuffer = await crypto.subtle.digest("SHA-1", msgUint8);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const signature = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
   
   const fd = new FormData();
   fd.append("file", fileUrl);
-  fd.append("upload_preset", preset);
-  fd.append("public_id", `results/${predictionId}`);
+  fd.append("api_key", apiKey);
+  fd.append("timestamp", timestamp.toString());
+  fd.append("signature", signature);
+  fd.append("public_id", publicId);
+  fd.append("folder", "results");
   
   
   const r = await fetch(endpoint, { method: "POST", body: fd });
