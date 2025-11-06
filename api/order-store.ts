@@ -165,8 +165,21 @@ export default async function handler(req: Request) {
     
     const expirySeconds = 90 * 24 * 60 * 60;
     
+    // Store the order data
     await kvClient.set(orderKey, orderData, { ex: expirySeconds });
-    await kvClient.set(emailKey, order.order_number, { ex: expirySeconds });
+    
+    // Store order numbers for this email as an array (supports multiple orders)
+    let emailOrders = await kvClient.get(emailKey) || [];
+    if (!Array.isArray(emailOrders)) {
+      emailOrders = [emailOrders]; // Convert old single value to array
+    }
+    
+    // Add this order to the array (if not already there)
+    if (!emailOrders.includes(order.order_number)) {
+      emailOrders.push(order.order_number);
+    }
+    
+    await kvClient.set(emailKey, emailOrders, { ex: expirySeconds });
     
     console.log("Stored order data:", {
       order_number: order.order_number,
