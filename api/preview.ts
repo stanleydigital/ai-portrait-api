@@ -164,15 +164,15 @@ export default async function handler(req: Request) {
     const input: Record<string, any> = {
       // image
       image_input: [optimizedImageUrl], // <-- primary key many Seedream-4 builds require
-      image_url: optimizedImageUrl, // <-- secondary (harmless backup)
+      //image_url: optimizedImageUrl, // <-- secondary (harmless backup)
       // text
       prompt: finalPrompt, // standard
-      style: finalPrompt, // alt
-      text_prompt: finalPrompt, // alt
+      //style: finalPrompt, // alt
+      //text_prompt: finalPrompt, // alt
       // size
       size: "custom",
-      width: 3072,
-      height: 4096
+      width: 2048,
+      height: 2730
     };
     
     // --- Get webhook URL for this deployment ---
