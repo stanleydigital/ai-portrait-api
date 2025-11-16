@@ -151,7 +151,7 @@ export default async function handler(req: Request) {
     if (/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(imageUrl)) {
       optimizedImageUrl = imageUrl.replace(
         "/upload/",
-        "/upload/f_auto,q_auto,w_2048,h_2048,c_limit/"
+        "/upload/f_auto,q_auto,w_1024,h_1024,c_limit,q_85/"
       );
     }
     
