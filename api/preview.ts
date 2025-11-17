@@ -171,8 +171,8 @@ export default async function handler(req: Request) {
       //text_prompt: finalPrompt, // alt
       // size
       size: "custom",
-      width: 2048,
-      height: 2730
+      width: 3072,
+      height: 4096
     };
     
     // --- Get webhook URL for this deployment ---
