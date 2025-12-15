@@ -77,7 +77,7 @@ export default async function handler(req: Request) {
   try {
     // Rate limiting (10 uploads per hour per IP)
     const ip = req.headers.get("x-forwarded-for") || req.headers.get("cf-connecting-ip") || "unknown";
-    if (!checkRateLimit(ip, 10, 3600000)) {
+    if (!checkRateLimit(ip, 50, 3600000)) {
       return new Response(
         JSON.stringify({ error: "Rate limit exceeded. Please try again later." }),
         { status: 429, ...cors(origin) }
