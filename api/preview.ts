@@ -1,4 +1,10 @@
-export const config = { runtime: "edge" };
+cocoatextscaling0cocoaplatform0{fonttblf0fswissfcharset0 Helvetica;}
+{colortbl;red255green255blue255;}
+{*expandedcolortbl;;}
+paperw11900paperh16840margl1440margr1440vieww11520viewh8400viewkind0
+pardtx720tx1440tx2160tx2880tx3600tx4320tx5040tx5760tx6480tx7200tx7920tx8640pardirnaturalpartightenfactor0
+
+f0fs24 cf0 export const config = { runtime: "edge" };
 
 // --- Allow-list of origins that can call your API ---
 const ALLOWED_ORIGINS = new Set([
@@ -35,7 +41,7 @@ async function initKV() {
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("⚠️ Vercel KV not available, falling back to in-memory rate limiting");
+    console.warn("uc0u9888 u65039  Vercel KV not available, falling back to in-memory rate limiting");
     return null;
   }
 }
@@ -146,82 +152,99 @@ export default async function handler(req: Request) {
       });
     }
     
-    // OPTIMIZATION: Use Cloudinary transformations to optimize image before sending to Replicate
+    // OPTIMIZATION: Use Cloudinary transformations to optimize image before sending to fal.ai
     let optimizedImageUrl = imageUrl;
-    if (/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(imageUrl)) {
+    if (/res.cloudinary.com/[^/]+/image/upload//.test(imageUrl)) {
       optimizedImageUrl = imageUrl.replace(
         "/upload/",
         "/upload/f_auto,q_auto,w_1024,h_1024,c_limit,q_85/"
       );
     }
     
-    // Stronger prompt to avoid generic results
-    const finalPrompt =
-      (prompt ? prompt + " " : "") +
-      "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
-    
-    // ✅ Send ALL commonly accepted keys so any Seedream build uses the image & text
-    const input: Record<string, any> = {
-      // image
-      image_input: [optimizedImageUrl], // <-- primary key many Seedream-4 builds require
-      //image_url: optimizedImageUrl, // <-- secondary (harmless backup)
-      // text
-      prompt: finalPrompt, // standard
-      //style: finalPrompt, // alt
-      //text_prompt: finalPrompt, // alt
-      // size
-      size: "custom",
-      width: 3072,
-      height: 4096
-    };
+    // Enhanced prompt for Valentine's card / head swap
+    const finalPrompt = prompt || 
+      `head_swap: start with Picture 1 as the base image, maintaining its lighting direction, shadows, and environmental atmosphere. 
+             completely remove and replace the head from Picture 1 with the head from Picture 2.
+             
+             FACE PRESERVATION: strictly preserve every facial feature from Picture 2 - eye color, nose structure, lip shape, facial bone structure, skin texture.
+             POSE TRANSFER: copy the exact eye direction, head tilt, rotation, and micro-expressions from Picture 1.
+             SKIN HARMONY: adjust the body's skin tone to perfectly match the face's complexion - unified natural skin color throughout the entire person.
+             BLENDING: seamless integration at the neck and shoulders with no visible edges or color discontinuity.
+             
+             QUALITY: photorealistic professional portrait photography, natural skin with visible pores and fine details,
+             soft atmospheric lighting matching the original scene, professional color grading,
+             ultra high resolution, hyper detailed, tack sharp focus, cinematic composition`;
+
+    const negativePrompt = `artificial plastic skin, waxy doll-like appearance, mannequin quality, synthetic textures,
+                     oversaturated unnatural colors, harsh visible edges at neck, visible seam line, 
+                     color mismatch between face and body, two-toned skin appearance,
+                     airbrushed overprocessed look, digital painting artifacts, unrealistic smoothness,
+                     blurry soft focus, low resolution, amateur quality, photoshop artifacts,
+                     mismatched lighting direction on face versus body, inconsistent shadows`;
     
     // --- Get webhook URL for this deployment ---
-    const deploymentUrl = req.url.replace(/\/api\/preview.*$/, "");
+    const deploymentUrl = req.url.replace(//api/preview.*$/, "");
     const webhookUrl = `${deploymentUrl}/api/webhook`;
     
-    // --- Call Replicate with webhook ---
-    const replicateUrl =
-      "https://api.replicate.com/v1/models/bytedance/seedream-4/predictions";
+    // --- Call fal.ai with webhook ---
+    const falUrl = "https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora";
     
-    const replicateRes = await fetch(replicateUrl, {
+    const falRes = await fetch(falUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}`
+        "Authorization": `Key ${process.env.FAL_API_KEY}`
       },
-      body: JSON.stringify({ 
-        input,
-        webhook: webhookUrl,
-        webhook_events_filter: ["completed"]
+      body: JSON.stringify({
+        prompt: finalPrompt,
+        image_urls: [optimizedImageUrl], // User's uploaded photo
+        num_inference_steps: 28,
+        guidance_scale: 4.5,
+        num_images: 1,
+        enable_safety_checker: true,
+        output_format: "jpeg",
+        acceleration: "regular",
+        loras: [
+          {
+            path: "https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v5_2511_original.safetensors",
+            scale: 0.6
+          },
+          {
+            path: "https://huggingface.co/tlennon-ie/qwen-edit-skin/resolve/main/qwen-edit-skin.safetensors",
+            scale: 0.7
+          }
+        ],
+        negative_prompt: negativePrompt,
+        webhook_url: webhookUrl
       })
     });
     
-    const text = await replicateRes.text();
+    const text = await falRes.text();
     let data: any = null;
     try {
       data = JSON.parse(text);
     } catch {
-      console.error("Non-JSON response from Replicate:", text);
+      console.error("Non-JSON response from fal.ai:", text);
     }
     
-    // after calling Replicate and parsing `data`
-    if (replicateRes.ok && data?.id) {
+    // fal.ai returns { request_id } on successful queue submission
+    if (falRes.ok && data?.request_id) {
+      console.log("✅ fal.ai generation queued:", data.request_id);
       return new Response(
         JSON.stringify({
-          id: data.id,
-          status: data.status || "queued",
-          get_url: data?.urls?.get || null,
-          echo: input // keep this while debugging
+          id: data.request_id,
+          status: "queued",
+          get_url: null // fal.ai doesn't use get_url, we poll by ID
         }),
         { status: 200, ...cors(origin) }
       );
     }
     
-    // --- Error: forward Replicate's message to client ---
-    const errMsg = data?.error || text || `Replicate error ${replicateRes.status}`;
-    console.error("Replicate error:", errMsg);
+    // --- Error: forward fal.ai's message to client ---
+    const errMsg = data?.error || data?.detail || text || `fal.ai error ${falRes.status}`;
+    console.error("fal.ai error:", errMsg);
     return new Response(JSON.stringify({ error: errMsg }), {
-      status: replicateRes.status || 500,
+      status: falRes.status || 500,
       ...cors(origin)
     });
   } catch (err: any) {
@@ -231,4 +254,4 @@ export default async function handler(req: Request) {
       ...cors(origin)
     });
   }
-}
+}}
