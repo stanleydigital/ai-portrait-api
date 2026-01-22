@@ -1,13 +1,7 @@
-cocoatextscaling0cocoaplatform0{fonttblf0fswissfcharset0 Helvetica;}
-{colortbl;red255green255blue255;}
-{*expandedcolortbl;;}
-paperw11900paperh16840margl1440margr1440vieww11520viewh8400viewkind0
-pardtx720tx1440tx2160tx2880tx3600tx4320tx5040tx5760tx6480tx7200tx7920tx8640pardirnaturalpartightenfactor0
+export const config = { runtime: "edge" };
 
-f0fs24 cf0 export const config = { runtime: "edge" };
-
-// ------- Webhook handler for Replicate completion events -------
-// This receives notifications when Replicate finishes generating
+// ------- Webhook handler for fal.ai completion events -------
+// This receives notifications when fal.ai finishes generating
 // This eliminates the need for constant polling from the frontend
 
 let kv: any = null;
@@ -21,15 +15,15 @@ async function initKV() {
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("uc0u9888 u65039  Vercel KV not available, webhook caching disabled");
+    console.warn("⚠️ Vercel KV not available, webhook caching disabled");
     return null;
   }
 }
 
-// Helper to find URL in Replicate output
+// Helper to find URL in fal.ai output
 function pickUrl(output: any): string | null {
   if (!output) return null;
-  if (typeof output === "string" && /^https?:///.test(output)) return output;
+  if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
   if (Array.isArray(output)) {
     for (const item of output) {
       const u = pickUrl(item);
@@ -56,7 +50,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("uc0u9989  Using cached Cloudinary URL:", predictionId);
+      console.log("✅ Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
@@ -102,7 +96,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("uc0u9989  Cached Cloudinary URL:", predictionId);
+    console.log("✅ Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
@@ -117,7 +111,7 @@ export default async function handler(req: Request) {
   try {
     const body = await req.json();
     
-    console.log("uc0u55356 u57251  Webhook received:", {
+    console.log("📥 Webhook received:", {
       request_id: body.request_id,
       status: body.status,
       hasResponseData: !!body.response_data
@@ -137,7 +131,7 @@ export default async function handler(req: Request) {
       if (falImageUrl) {
         try {
           const cdn_url = await uploadResultToCloudinary(falImageUrl, request_id);
-          console.log("uc0u9989  Webhook: Uploaded to Cloudinary:", request_id);
+          console.log("✅ Webhook: Uploaded to Cloudinary:", request_id);
           
           // Cache the result in KV for instant retrieval by polling endpoint
           const kvClient = await initKV();
@@ -151,10 +145,10 @@ export default async function handler(req: Request) {
             // Also cache the CDN URL separately
             await kvClient.set(`cdn:${request_id}`, cdn_url, { ex: 604800 }); // 7 days
             
-            console.log("uc0u9989  Webhook: Cached result:", request_id);
+            console.log("✅ Webhook: Cached result:", request_id);
           }
         } catch (err) {
-          console.error("uc0u10060  Webhook: Cloudinary upload failed:", err);
+          console.error("❌ Webhook: Cloudinary upload failed:", err);
           // Don't fail the webhook - fal.ai expects 200
         }
       }
@@ -169,7 +163,7 @@ export default async function handler(req: Request) {
           error: body.error || body.logs || "Generation failed"
         }, { ex: 3600 }); // Cache errors for 1 hour
         
-        console.log("uc0u9989  Webhook: Cached error:", request_id);
+        console.log("✅ Webhook: Cached error:", request_id);
       }
     }
     
@@ -177,7 +171,7 @@ export default async function handler(req: Request) {
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
     
   } catch (err: any) {
-    console.error("uc0u10060  Webhook error:", err);
+    console.error("❌ Webhook error:", err);
     // Still return 200 so fal.ai doesn't retry
     return new Response(JSON.stringify({ error: err.message }), { status: 200 });
   }
