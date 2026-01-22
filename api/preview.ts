@@ -1,10 +1,4 @@
-cocoatextscaling0cocoaplatform0{fonttblf0fswissfcharset0 Helvetica;}
-{colortbl;red255green255blue255;}
-{*expandedcolortbl;;}
-paperw11900paperh16840margl1440margr1440vieww11520viewh8400viewkind0
-pardtx720tx1440tx2160tx2880tx3600tx4320tx5040tx5760tx6480tx7200tx7920tx8640pardirnaturalpartightenfactor0
-
-f0fs24 cf0 export const config = { runtime: "edge" };
+export const config = { runtime: "edge" };
 
 // --- Allow-list of origins that can call your API ---
 const ALLOWED_ORIGINS = new Set([
@@ -27,9 +21,6 @@ function cors(origin: string | null) {
 }
 
 // ------- RATE LIMITING with Vercel KV (PRODUCTION READY) -------
-// Install: npm install @vercel/kv
-// Set env vars: KV_URL, KV_REST_API_URL, KV_REST_API_TOKEN, KV_REST_API_READ_ONLY_TOKEN
-
 let kv: any = null;
 
 async function initKV() {
@@ -41,7 +32,7 @@ async function initKV() {
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("uc0u9888 u65039  Vercel KV not available, falling back to in-memory rate limiting");
+    console.warn("⚠️ Vercel KV not available, falling back to in-memory rate limiting");
     return null;
   }
 }
@@ -106,7 +97,7 @@ export default async function handler(req: Request) {
   }
   
   try {
-    // --- Rate limiting: 20 generations per hour per IP ---
+    // --- Rate limiting: 50 generations per hour per IP ---
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
       || req.headers.get("cf-connecting-ip")
       || "unknown";
@@ -114,7 +105,7 @@ export default async function handler(req: Request) {
     if (!await checkRateLimit(ip, 50, 3600000)) {
       return new Response(
         JSON.stringify({
-          error: "Rate limit exceeded. You can generate 20 portraits per hour. Please try again later."
+          error: "Rate limit exceeded. You can generate 50 portraits per hour. Please try again later."
         }),
         {
           status: 429,
@@ -154,7 +145,7 @@ export default async function handler(req: Request) {
     
     // OPTIMIZATION: Use Cloudinary transformations to optimize image before sending to fal.ai
     let optimizedImageUrl = imageUrl;
-    if (/res.cloudinary.com/[^/]+/image/upload//.test(imageUrl)) {
+    if (/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(imageUrl)) {
       optimizedImageUrl = imageUrl.replace(
         "/upload/",
         "/upload/f_auto,q_auto,w_1024,h_1024,c_limit,q_85/"
@@ -183,7 +174,7 @@ export default async function handler(req: Request) {
                      mismatched lighting direction on face versus body, inconsistent shadows`;
     
     // --- Get webhook URL for this deployment ---
-    const deploymentUrl = req.url.replace(//api/preview.*$/, "");
+    const deploymentUrl = req.url.replace(/\/api\/preview.*$/, "");
     const webhookUrl = `${deploymentUrl}/api/webhook`;
     
     // --- Call fal.ai with webhook ---
@@ -197,7 +188,7 @@ export default async function handler(req: Request) {
       },
       body: JSON.stringify({
         prompt: finalPrompt,
-        image_urls: [optimizedImageUrl], // User's uploaded photo
+        image_urls: [optimizedImageUrl],
         num_inference_steps: 28,
         guidance_scale: 4.5,
         num_images: 1,
@@ -234,7 +225,7 @@ export default async function handler(req: Request) {
         JSON.stringify({
           id: data.request_id,
           status: "queued",
-          get_url: null // fal.ai doesn't use get_url, we poll by ID
+          get_url: null
         }),
         { status: 200, ...cors(origin) }
       );
@@ -254,4 +245,4 @@ export default async function handler(req: Request) {
       ...cors(origin)
     });
   }
-}}
+}
