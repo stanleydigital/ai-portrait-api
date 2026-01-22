@@ -1,4 +1,10 @@
-export const config = { runtime: "edge" };
+cocoatextscaling0cocoaplatform0{fonttblf0fswissfcharset0 Helvetica;}
+{colortbl;red255green255blue255;}
+{*expandedcolortbl;;}
+paperw11900paperh16840margl1440margr1440vieww11520viewh8400viewkind0
+pardtx720tx1440tx2160tx2880tx3600tx4320tx5040tx5760tx6480tx7200tx7920tx8640pardirnaturalpartightenfactor0
+
+f0fs24 cf0 export const config = { runtime: "edge" };
 
 // --- Allow-list of origins that can call your API ---
 const ALLOWED_ORIGINS = new Set([
@@ -32,7 +38,7 @@ async function initKV() {
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("⚠️ Vercel KV not available");
+    console.warn("uc0u9888 u65039  Vercel KV not available");
     return null;
   }
 }
@@ -40,7 +46,7 @@ async function initKV() {
 // ------- Helper: recursively find a URL in Replicate output -------
 function pickUrl(output: any): string | null {
   if (!output) return null;
-  if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
+  if (typeof output === "string" && /^https?:///.test(output)) return output;
   if (Array.isArray(output)) {
     for (const item of output) {
       const u = pickUrl(item);
@@ -67,7 +73,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("✅ Using cached Cloudinary URL:", predictionId);
+      console.log("uc0u9989  Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
@@ -113,7 +119,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("✅ Cached Cloudinary URL:", predictionId);
+    console.log("uc0u9989  Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
@@ -126,19 +132,22 @@ async function pollById(id: string, debug = false) {
   if (kvClient) {
     const cached = await kvClient.get(`prediction:${id}`);
     if (cached) {
-      console.log("⚡ Using webhook cache:", id);
+      console.log("uc0u9889  Using webhook cache:", id);
       return cached as any;
     }
   }
   
-  // If not in cache, poll Replicate
-  const r = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
-    headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
+  // If not in cache, poll fal.ai
+  const r = await fetch(`https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}/status`, {
+    headers: { 
+      "Authorization": `Key ${process.env.FAL_API_KEY}`,
+      "Content-Type": "application/json"
+    }
   });
   
   if (!r.ok) {
     const txt = await r.text();
-    return { status: "failed" as const, id, error: `Replicate fetch failed: ${r.status} ${txt}` };
+    return { status: "failed" as const, id, error: `fal.ai fetch failed: ${r.status} ${txt}` };
   }
   
   const pred = await r.json();
@@ -147,25 +156,27 @@ async function pollById(id: string, debug = false) {
     return { status: pred.status, raw: pred };
   }
   
-  const status = (pred.status || "").toLowerCase();
+  // fal.ai uses uppercase status: "IN_QUEUE", "IN_PROGRESS", "COMPLETED", "FAILED"
+  const status = pred.status;
   
-  if (status === "succeeded") {
-    const replicateUrl = pickUrl(pred.output);
+  if (status === "COMPLETED") {
+    // fal.ai returns images array in response_data
+    const imageUrl = pred.response_data?.images?.[0]?.url || pickUrl(pred.response_data);
     let cdn_url: string | null = null;
     
-    if (replicateUrl) {
+    if (imageUrl) {
       try {
-        cdn_url = await uploadResultToCloudinary(replicateUrl, id);
-        console.log("✅ Uploaded to Cloudinary:", id);
+        cdn_url = await uploadResultToCloudinary(imageUrl, id);
+        console.log("uc0u9989  Uploaded to Cloudinary:", id);
       } catch (e) {
-        console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
+        console.warn("Cloudinary upload failed (fallback to fal.ai URL):", e);
       }
     }
     
     const result = {
       status: "succeeded" as const,
       id,
-      output: replicateUrl ? [replicateUrl] : [],
+      output: imageUrl ? [imageUrl] : [],
       cdn_url
     };
     
@@ -177,8 +188,12 @@ async function pollById(id: string, debug = false) {
     return result;
   }
   
-  if (status === "failed" || status === "canceled") {
-    const result = { status: status as "failed" | "canceled", id, error: pred.error || null };
+  if (status === "FAILED") {
+    const result = { 
+      status: "failed" as const, 
+      id, 
+      error: pred.error || pred.logs || "Generation failed" 
+    };
     
     // Cache errors too
     if (kvClient) {
@@ -188,73 +203,18 @@ async function pollById(id: string, debug = false) {
     return result;
   }
   
-  // Still processing
+  // Still processing (IN_QUEUE or IN_PROGRESS)
   return { status: "processing" as const, id };
 }
 
+
 async function pollByGetUrl(get_url: string, debug = false) {
-  const r = await fetch(get_url, {
-    headers: { "Authorization": `Token ${process.env.REPLICATE_API_TOKEN}` }
-  });
-  
-  if (!r.ok) return { status: "failed" as const, error: `Replicate fetch failed: ${r.status}` };
-  
-  const pred = await r.json();
-  const id = pred.id;
-  
-  // If we have an ID, check cache
-  if (id) {
-    const kvClient = await initKV();
-    if (kvClient) {
-      const cached = await kvClient.get(`prediction:${id}`);
-      if (cached) {
-        console.log("⚡ Using webhook cache:", id);
-        return cached as any;
-      }
-    }
-  }
-  
-  if (debug) {
-    return { status: pred.status, raw: pred };
-  }
-  
-  const status = (pred.status || "").toLowerCase();
-  
-  if (status === "succeeded") {
-    const replicateUrl = pickUrl(pred.output);
-    let cdn_url: string | null = null;
-    
-    if (replicateUrl && id) {
-      try {
-        cdn_url = await uploadResultToCloudinary(replicateUrl, id);
-        console.log("✅ Uploaded to Cloudinary:", id);
-      } catch (e) {
-        console.warn("Cloudinary upload failed (fallback to Replicate URL):", e);
-      }
-    }
-    
-    const result = {
-      status: "succeeded" as const,
-      output: replicateUrl ? [replicateUrl] : [],
-      cdn_url
-    };
-    
-    // Cache for future requests
-    if (id) {
-      const kvClient = await initKV();
-      if (kvClient) {
-        await kvClient.set(`prediction:${id}`, result, { ex: 86400 });
-      }
-    }
-    
-    return result;
-  }
-  
-  if (status === "failed" || status === "canceled") {
-    return { status: status as "failed" | "canceled", error: pred.error || null };
-  }
-  
-  return { status: "processing" as const };
+  // fal.ai doesn't use get_url pattern - this function is kept for backward compatibility
+  // but will just return an error since fal.ai polling is done by ID only
+  return { 
+    status: "failed" as const, 
+    error: "get_url not supported with fal.ai - use polling by ID instead" 
+  };
 }
 
 // ------- Main handler -------
@@ -306,4 +266,4 @@ export default async function handler(req: Request) {
       status: 200, ...corsWithOrigin(origin)
     });
   }
-}
+}}
