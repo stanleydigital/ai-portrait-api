@@ -60,10 +60,12 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("Using cached Cloudinary URL:", predictionId);
+      console.log("✅ Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
+  
+  console.log("📤 Uploading to Cloudinary:", fileUrl);
   
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
   const timestamp = Math.floor(Date.now() / 1000);
@@ -97,14 +99,16 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const r = await fetch(endpoint, { method: "POST", body: fd });
   if (!r.ok) {
     const txt = await r.text();
+    console.error("❌ Cloudinary upload failed:", r.status, txt);
     throw new Error(`Cloudinary upload failed: ${r.status} ${txt}`);
   }
   const json = await r.json();
   const cdnUrl = json.secure_url as string;
   
+  console.log("✅ Cloudinary upload success:", cdnUrl);
+  
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
@@ -115,14 +119,19 @@ async function pollById(id: string, debug = false) {
   if (kvClient) {
     const cached = await kvClient.get(`prediction:${id}`);
     if (cached) {
-      console.log("Using webhook cache:", id);
+      console.log("⚡ Using webhook cache:", id);
       return cached as any;
     }
   }
   
-  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}/status`;
+  // CRITICAL FIX: Remove /lora subpath from status/result endpoints!
+  // Submit uses: fal-ai/qwen-image-edit-2511/lora
+  // But status/result use: fal-ai/qwen-image-edit-2511 (no /lora)
+  const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/requests/${id}`;
   
-  const r = await fetch(statusUrl, {
+  console.log("🔍 Polling fal.ai:", resultUrl);
+  
+  const r = await fetch(resultUrl, {
     method: "GET",
     headers: { 
       "Authorization": `Key ${process.env.FAL_API_KEY}`,
@@ -130,9 +139,17 @@ async function pollById(id: string, debug = false) {
     }
   });
   
+  console.log("📥 fal.ai response status:", r.status);
+  
   if (!r.ok) {
     const txt = await r.text();
-    console.error("fal.ai status fetch failed:", r.status, txt);
+    console.error("❌ fal.ai result fetch failed:", r.status, txt);
+    
+    // 400 means not completed yet
+    if (r.status === 400) {
+      return { status: "processing" as const, id };
+    }
+    
     return { status: "failed" as const, id, error: `fal.ai fetch failed: ${r.status} ${txt}` };
   }
   
@@ -142,36 +159,26 @@ async function pollById(id: string, debug = false) {
     return { status: pred.status, raw: pred };
   }
   
-  console.log("fal.ai poll response:", JSON.stringify(pred));
+  console.log("📊 fal.ai response data:", JSON.stringify(pred, null, 2));
   
   const status = pred.status;
   
   if (status === "COMPLETED") {
-    // fal.ai queue status returns result in "response" field
-    let imageUrl = null;
+    // According to docs: "response" field is at root level when status is COMPLETED
+    const imageUrl = pred.response?.images?.[0]?.url || pickUrl(pred.response);
     
-    // Try multiple possible locations for the image URL
-    if (pred.response?.images?.[0]?.url) {
-      imageUrl = pred.response.images[0].url;
-    } else if (pred.response_data?.images?.[0]?.url) {
-      imageUrl = pred.response_data.images[0].url;
-    } else {
-      imageUrl = pickUrl(pred.response) || pickUrl(pred.response_data);
-    }
-    
-    console.log("Extracted image URL:", imageUrl);
+    console.log("🖼️ Extracted image URL:", imageUrl);
     
     let cdn_url: string | null = null;
     
     if (imageUrl) {
       try {
         cdn_url = await uploadResultToCloudinary(imageUrl, id);
-        console.log("Uploaded to Cloudinary:", id, cdn_url);
       } catch (e) {
-        console.error("Cloudinary upload failed:", e);
+        console.error("❌ Cloudinary upload error:", e);
       }
     } else {
-      console.error("No image URL found in response!");
+      console.error("❌ No image URL found! Full response:", JSON.stringify(pred));
     }
     
     const result = {
@@ -202,14 +209,8 @@ async function pollById(id: string, debug = false) {
     return result;
   }
   
+  // IN_QUEUE or IN_PROGRESS
   return { status: "processing" as const, id };
-}
-
-async function pollByGetUrl(get_url: string, debug = false) {
-  return { 
-    status: "failed" as const, 
-    error: "get_url not supported" 
-  };
 }
 
 export default async function handler(req: Request) {
@@ -252,7 +253,7 @@ export default async function handler(req: Request) {
     
     return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
   } catch (err: any) {
-    console.error("Poll error:", err);
+    console.error("❌ Poll error:", err);
     return new Response(JSON.stringify({ status: "processing" }), {
       status: 200, ...corsWithOrigin(origin)
     });
