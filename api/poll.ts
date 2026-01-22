@@ -1,10 +1,4 @@
-cocoatextscaling0cocoaplatform0{fonttblf0fswissfcharset0 Helvetica;}
-{colortbl;red255green255blue255;}
-{*expandedcolortbl;;}
-paperw11900paperh16840margl1440margr1440vieww11520viewh8400viewkind0
-pardtx720tx1440tx2160tx2880tx3600tx4320tx5040tx5760tx6480tx7200tx7920tx8640pardirnaturalpartightenfactor0
-
-f0fs24 cf0 export const config = { runtime: "edge" };
+export const config = { runtime: "edge" };
 
 // --- Allow-list of origins that can call your API ---
 const ALLOWED_ORIGINS = new Set([
@@ -38,15 +32,15 @@ async function initKV() {
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("uc0u9888 u65039  Vercel KV not available");
+    console.warn("⚠️ Vercel KV not available");
     return null;
   }
 }
 
-// ------- Helper: recursively find a URL in Replicate output -------
+// ------- Helper: recursively find a URL in fal.ai output -------
 function pickUrl(output: any): string | null {
   if (!output) return null;
-  if (typeof output === "string" && /^https?:///.test(output)) return output;
+  if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
   if (Array.isArray(output)) {
     for (const item of output) {
       const u = pickUrl(item);
@@ -73,7 +67,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("uc0u9989  Using cached Cloudinary URL:", predictionId);
+      console.log("✅ Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
@@ -119,7 +113,7 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("uc0u9989  Cached Cloudinary URL:", predictionId);
+    console.log("✅ Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
@@ -132,7 +126,7 @@ async function pollById(id: string, debug = false) {
   if (kvClient) {
     const cached = await kvClient.get(`prediction:${id}`);
     if (cached) {
-      console.log("uc0u9889  Using webhook cache:", id);
+      console.log("⚡ Using webhook cache:", id);
       return cached as any;
     }
   }
@@ -167,7 +161,7 @@ async function pollById(id: string, debug = false) {
     if (imageUrl) {
       try {
         cdn_url = await uploadResultToCloudinary(imageUrl, id);
-        console.log("uc0u9989  Uploaded to Cloudinary:", id);
+        console.log("✅ Uploaded to Cloudinary:", id);
       } catch (e) {
         console.warn("Cloudinary upload failed (fallback to fal.ai URL):", e);
       }
@@ -207,10 +201,8 @@ async function pollById(id: string, debug = false) {
   return { status: "processing" as const, id };
 }
 
-
 async function pollByGetUrl(get_url: string, debug = false) {
-  // fal.ai doesn't use get_url pattern - this function is kept for backward compatibility
-  // but will just return an error since fal.ai polling is done by ID only
+  // fal.ai doesn't use get_url pattern - kept for backward compatibility
   return { 
     status: "failed" as const, 
     error: "get_url not supported with fal.ai - use polling by ID instead" 
@@ -266,4 +258,4 @@ export default async function handler(req: Request) {
       status: 200, ...corsWithOrigin(origin)
     });
   }
-}}
+}
