@@ -1,26 +1,19 @@
 export const config = { runtime: "edge" };
 
-// ------- Webhook handler for fal.ai completion events -------
-// This receives notifications when fal.ai finishes generating
-// This eliminates the need for constant polling from the frontend
-
 let kv: any = null;
 
 async function initKV() {
   if (kv) return kv;
-  
   try {
-    // @ts-ignore
     const { kv: kvClient } = await import('@vercel/kv');
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("⚠️ Vercel KV not available, webhook caching disabled");
+    console.warn("KV not available");
     return null;
   }
 }
 
-// Helper to find URL in fal.ai output
 function pickUrl(output: any): string | null {
   if (!output) return null;
   if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
@@ -38,19 +31,17 @@ function pickUrl(output: any): string | null {
   return null;
 }
 
-// Upload to Cloudinary
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const apiKey = process.env.CLOUDINARY_API_KEY!;
   const apiSecret = process.env.CLOUDINARY_API_SECRET!;
   
-  // Check cache first to avoid duplicate uploads
   const kvClient = await initKV();
   if (kvClient) {
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("✅ Using cached Cloudinary URL:", predictionId);
+      console.log("Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
@@ -59,7 +50,6 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const timestamp = Math.floor(Date.now() / 1000);
   const publicId = `results/${predictionId}`;
   
-  // Generate signature for signed upload
   const paramsToSign: Record<string, any> = {
     timestamp,
     public_id: publicId,
@@ -93,17 +83,15 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const json = await r.json();
   const cdnUrl = json.secure_url as string;
   
-  // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("✅ Cached Cloudinary URL:", predictionId);
+    console.log("Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
 }
 
 export default async function handler(req: Request) {
-  // Only accept POST requests from fal.ai
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
@@ -111,68 +99,76 @@ export default async function handler(req: Request) {
   try {
     const body = await req.json();
     
-    console.log("📥 Webhook received:", {
-      request_id: body.request_id,
-      status: body.status,
-      hasResponseData: !!body.response_data
-    });
+    console.log("Webhook received:", JSON.stringify(body));
     
-    // fal.ai webhook payload: { request_id, status, response_data }
-    const { request_id, status, response_data } = body;
+    // fal.ai webhook structure: { request_id, status: "OK"|"ERROR", payload }
+    const { request_id, status, payload } = body;
     
     if (!request_id) {
+      console.error("Missing request_id in webhook");
       return new Response(JSON.stringify({ error: "Missing request ID" }), { status: 400 });
     }
     
-    // If generation succeeded, upload to Cloudinary immediately
-    if (status === "COMPLETED" && response_data) {
-      const falImageUrl = response_data?.images?.[0]?.url || pickUrl(response_data);
+    // If generation succeeded (status: "OK")
+    if (status === "OK" && payload) {
+      console.log("Webhook payload:", JSON.stringify(payload));
+      
+      let falImageUrl = null;
+      
+      // Try multiple possible locations for the image URL
+      if (payload.images?.[0]?.url) {
+        falImageUrl = payload.images[0].url;
+      } else if (payload.response?.images?.[0]?.url) {
+        falImageUrl = payload.response.images[0].url;
+      } else {
+        falImageUrl = pickUrl(payload);
+      }
+      
+      console.log("Extracted webhook image URL:", falImageUrl);
       
       if (falImageUrl) {
         try {
           const cdn_url = await uploadResultToCloudinary(falImageUrl, request_id);
-          console.log("✅ Webhook: Uploaded to Cloudinary:", request_id);
+          console.log("Webhook: Uploaded to Cloudinary:", request_id, cdn_url);
           
-          // Cache the result in KV for instant retrieval by polling endpoint
           const kvClient = await initKV();
           if (kvClient) {
             await kvClient.set(`prediction:${request_id}`, {
               status: "succeeded",
               cdn_url,
               output: [falImageUrl]
-            }, { ex: 86400 }); // Cache for 24 hours
+            }, { ex: 86400 });
             
-            // Also cache the CDN URL separately
-            await kvClient.set(`cdn:${request_id}`, cdn_url, { ex: 604800 }); // 7 days
+            await kvClient.set(`cdn:${request_id}`, cdn_url, { ex: 604800 });
             
-            console.log("✅ Webhook: Cached result:", request_id);
+            console.log("Webhook: Cached result:", request_id);
           }
         } catch (err) {
-          console.error("❌ Webhook: Cloudinary upload failed:", err);
-          // Don't fail the webhook - fal.ai expects 200
+          console.error("Webhook: Cloudinary upload failed:", err);
         }
+      } else {
+        console.error("Webhook: No image URL found in payload!");
       }
     }
     
-    // If generation failed, cache the error
-    if (status === "FAILED") {
+    // If generation failed (status: "ERROR")
+    if (status === "ERROR") {
+      console.error("Webhook: Generation failed:", body.error);
       const kvClient = await initKV();
       if (kvClient) {
         await kvClient.set(`prediction:${request_id}`, {
           status: "failed",
-          error: body.error || body.logs || "Generation failed"
-        }, { ex: 3600 }); // Cache errors for 1 hour
+          error: body.error || payload?.detail || "Generation failed"
+        }, { ex: 3600 });
         
-        console.log("✅ Webhook: Cached error:", request_id);
+        console.log("Webhook: Cached error:", request_id);
       }
     }
     
-    // Always return 200 to fal.ai
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
     
   } catch (err: any) {
-    console.error("❌ Webhook error:", err);
-    // Still return 200 so fal.ai doesn't retry
+    console.error("Webhook error:", err);
     return new Response(JSON.stringify({ error: err.message }), { status: 200 });
   }
 }
