@@ -120,7 +120,6 @@ async function pollById(id: string, debug = false) {
     }
   }
   
-  // CORRECT fal.ai status endpoint format
   const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}/status`;
   
   const r = await fetch(statusUrl, {
@@ -143,26 +142,36 @@ async function pollById(id: string, debug = false) {
     return { status: pred.status, raw: pred };
   }
   
-  console.log("fal.ai response:", {
-    status: pred.status,
-    hasResponse: !!pred.response,
-    hasLogs: !!pred.logs
-  });
+  console.log("fal.ai poll response:", JSON.stringify(pred));
   
   const status = pred.status;
   
   if (status === "COMPLETED") {
-    // fal.ai returns result in "response" field, not "response_data"
-    const imageUrl = pred.response?.images?.[0]?.url || pickUrl(pred.response);
+    // fal.ai queue status returns result in "response" field
+    let imageUrl = null;
+    
+    // Try multiple possible locations for the image URL
+    if (pred.response?.images?.[0]?.url) {
+      imageUrl = pred.response.images[0].url;
+    } else if (pred.response_data?.images?.[0]?.url) {
+      imageUrl = pred.response_data.images[0].url;
+    } else {
+      imageUrl = pickUrl(pred.response) || pickUrl(pred.response_data);
+    }
+    
+    console.log("Extracted image URL:", imageUrl);
+    
     let cdn_url: string | null = null;
     
     if (imageUrl) {
       try {
         cdn_url = await uploadResultToCloudinary(imageUrl, id);
-        console.log("Uploaded to Cloudinary:", id);
+        console.log("Uploaded to Cloudinary:", id, cdn_url);
       } catch (e) {
-        console.warn("Cloudinary upload failed:", e);
+        console.error("Cloudinary upload failed:", e);
       }
+    } else {
+      console.error("No image URL found in response!");
     }
     
     const result = {
