@@ -120,21 +120,20 @@ async function pollById(id: string, debug = false) {
     }
   }
   
-  // FIXED: Use fal.ai results endpoint instead of status endpoint
-  // The status endpoint returns 405, but results endpoint works
-  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}`;
+  // CORRECT fal.ai status endpoint format
+  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}/status`;
   
   const r = await fetch(statusUrl, {
     method: "GET",
     headers: { 
       "Authorization": `Key ${process.env.FAL_API_KEY}`,
-      "Accept": "application/json"
+      "Content-Type": "application/json"
     }
   });
   
   if (!r.ok) {
     const txt = await r.text();
-    console.error("fal.ai fetch failed:", r.status, txt);
+    console.error("fal.ai status fetch failed:", r.status, txt);
     return { status: "failed" as const, id, error: `fal.ai fetch failed: ${r.status} ${txt}` };
   }
   
@@ -144,17 +143,17 @@ async function pollById(id: string, debug = false) {
     return { status: pred.status, raw: pred };
   }
   
-  console.log("fal.ai status response:", {
+  console.log("fal.ai response:", {
     status: pred.status,
-    hasResponseData: !!pred.response_data,
-    hasImages: !!pred.response_data?.images,
-    rawPred: pred
+    hasResponse: !!pred.response,
+    hasLogs: !!pred.logs
   });
   
   const status = pred.status;
   
   if (status === "COMPLETED") {
-    const imageUrl = pred.response_data?.images?.[0]?.url || pickUrl(pred.response_data);
+    // fal.ai returns result in "response" field, not "response_data"
+    const imageUrl = pred.response?.images?.[0]?.url || pickUrl(pred.response);
     let cdn_url: string | null = null;
     
     if (imageUrl) {
@@ -162,7 +161,7 @@ async function pollById(id: string, debug = false) {
         cdn_url = await uploadResultToCloudinary(imageUrl, id);
         console.log("Uploaded to Cloudinary:", id);
       } catch (e) {
-        console.warn("Cloudinary upload failed (fallback to fal.ai URL):", e);
+        console.warn("Cloudinary upload failed:", e);
       }
     }
     
@@ -200,7 +199,7 @@ async function pollById(id: string, debug = false) {
 async function pollByGetUrl(get_url: string, debug = false) {
   return { 
     status: "failed" as const, 
-    error: "get_url not supported with fal.ai - use polling by ID instead" 
+    error: "get_url not supported" 
   };
 }
 
@@ -218,14 +217,9 @@ export default async function handler(req: Request) {
       const debug = searchParams.get("debug") === "1";
       
       if (!id) {
-        const get_url = searchParams.get("get_url");
-        if (!get_url) {
-          return new Response(JSON.stringify({ error: "Missing id" }), {
-            status: 200, ...corsWithOrigin(origin)
-          });
-        }
-        const data = await pollByGetUrl(get_url, debug);
-        return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
+        return new Response(JSON.stringify({ error: "Missing id" }), {
+          status: 200, ...corsWithOrigin(origin)
+        });
       }
       
       const data = await pollById(id, debug);
@@ -234,20 +228,22 @@ export default async function handler(req: Request) {
     
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
-      const get_url: string | undefined = body.get_url;
+      const id = body.id;
       const debug = body.debug === true;
-      if (!get_url) {
-        return new Response(JSON.stringify({ error: "Missing get_url" }), {
+      
+      if (!id) {
+        return new Response(JSON.stringify({ error: "Missing id" }), {
           status: 200, ...corsWithOrigin(origin)
         });
       }
-      const data = await pollByGetUrl(get_url, debug);
+      
+      const data = await pollById(id, debug);
       return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
     }
     
     return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
   } catch (err: any) {
-    console.error("Poll server error:", err);
+    console.error("Poll error:", err);
     return new Response(JSON.stringify({ status: "processing" }), {
       status: 200, ...corsWithOrigin(origin)
     });
