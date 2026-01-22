@@ -1,6 +1,5 @@
 export const config = { runtime: "edge" };
 
-// --- Allow-list of origins that can call your API ---
 const ALLOWED_ORIGINS = new Set([
   "https://pawinci.com",
   "https://www.pawinci.com",
@@ -20,24 +19,20 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
-// ------- KV Storage -------
 let kv: any = null;
 
 async function initKV() {
   if (kv) return kv;
-  
   try {
-    // @ts-ignore
     const { kv: kvClient } = await import('@vercel/kv');
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("⚠️ Vercel KV not available");
+    console.warn("KV not available");
     return null;
   }
 }
 
-// ------- Helper: recursively find a URL in fal.ai output -------
 function pickUrl(output: any): string | null {
   if (!output) return null;
   if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
@@ -55,19 +50,17 @@ function pickUrl(output: any): string | null {
   return null;
 }
 
-// ------- Cloudinary upload helper with CACHING -------
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const apiKey = process.env.CLOUDINARY_API_KEY!;
   const apiSecret = process.env.CLOUDINARY_API_SECRET!;
   
-  // Check cache first to avoid duplicate uploads
   const kvClient = await initKV();
   if (kvClient) {
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("✅ Using cached Cloudinary URL:", predictionId);
+      console.log("Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
@@ -76,7 +69,6 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const timestamp = Math.floor(Date.now() / 1000);
   const publicId = `results/${predictionId}`;
   
-  // Generate signature for signed upload
   const paramsToSign: Record<string, any> = {
     timestamp,
     public_id: publicId,
@@ -110,37 +102,39 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const json = await r.json();
   const cdnUrl = json.secure_url as string;
   
-  // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("✅ Cached Cloudinary URL:", predictionId);
+    console.log("Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
 }
 
-// ------- Poll helpers with webhook cache check -------
 async function pollById(id: string, debug = false) {
-  // OPTIMIZATION: Check webhook cache first
   const kvClient = await initKV();
   if (kvClient) {
     const cached = await kvClient.get(`prediction:${id}`);
     if (cached) {
-      console.log("⚡ Using webhook cache:", id);
+      console.log("Using webhook cache:", id);
       return cached as any;
     }
   }
   
-  // If not in cache, poll fal.ai
-  const r = await fetch(`https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}/status`, {
+  // FIXED: Use fal.ai results endpoint instead of status endpoint
+  // The status endpoint returns 405, but results endpoint works
+  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${id}`;
+  
+  const r = await fetch(statusUrl, {
+    method: "GET",
     headers: { 
       "Authorization": `Key ${process.env.FAL_API_KEY}`,
-      "Content-Type": "application/json"
+      "Accept": "application/json"
     }
   });
   
   if (!r.ok) {
     const txt = await r.text();
+    console.error("fal.ai fetch failed:", r.status, txt);
     return { status: "failed" as const, id, error: `fal.ai fetch failed: ${r.status} ${txt}` };
   }
   
@@ -150,18 +144,23 @@ async function pollById(id: string, debug = false) {
     return { status: pred.status, raw: pred };
   }
   
-  // fal.ai uses uppercase status: "IN_QUEUE", "IN_PROGRESS", "COMPLETED", "FAILED"
+  console.log("fal.ai status response:", {
+    status: pred.status,
+    hasResponseData: !!pred.response_data,
+    hasImages: !!pred.response_data?.images,
+    rawPred: pred
+  });
+  
   const status = pred.status;
   
   if (status === "COMPLETED") {
-    // fal.ai returns images array in response_data
     const imageUrl = pred.response_data?.images?.[0]?.url || pickUrl(pred.response_data);
     let cdn_url: string | null = null;
     
     if (imageUrl) {
       try {
         cdn_url = await uploadResultToCloudinary(imageUrl, id);
-        console.log("✅ Uploaded to Cloudinary:", id);
+        console.log("Uploaded to Cloudinary:", id);
       } catch (e) {
         console.warn("Cloudinary upload failed (fallback to fal.ai URL):", e);
       }
@@ -174,7 +173,6 @@ async function pollById(id: string, debug = false) {
       cdn_url
     };
     
-    // Cache for future requests
     if (kvClient) {
       await kvClient.set(`prediction:${id}`, result, { ex: 86400 });
     }
@@ -189,7 +187,6 @@ async function pollById(id: string, debug = false) {
       error: pred.error || pred.logs || "Generation failed" 
     };
     
-    // Cache errors too
     if (kvClient) {
       await kvClient.set(`prediction:${id}`, result, { ex: 3600 });
     }
@@ -197,19 +194,16 @@ async function pollById(id: string, debug = false) {
     return result;
   }
   
-  // Still processing (IN_QUEUE or IN_PROGRESS)
   return { status: "processing" as const, id };
 }
 
 async function pollByGetUrl(get_url: string, debug = false) {
-  // fal.ai doesn't use get_url pattern - kept for backward compatibility
   return { 
     status: "failed" as const, 
     error: "get_url not supported with fal.ai - use polling by ID instead" 
   };
 }
 
-// ------- Main handler -------
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
   
