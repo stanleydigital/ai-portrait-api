@@ -1,6 +1,5 @@
 export const config = { runtime: "edge" };
 
-// Allow-list of origins
 const ALLOWED_ORIGINS = new Set([
   "https://pawinci.com",
   "https://www.pawinci.com",
@@ -20,35 +19,31 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
-// KV Storage
 let kv: any = null;
 
 async function initKV() {
   if (kv) return kv;
   
   try {
-    // @ts-ignore
     const { kv: kvClient } = await import('@vercel/kv');
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("⚠️ Vercel KV not available");
+    console.warn("Vercel KV not available");
     return null;
   }
 }
 
-// Cloudinary upload helper with CACHING
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
   const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
   
-  // Check cache first to avoid duplicate uploads
   const kvClient = await initKV();
   if (kvClient) {
     const cacheKey = `cdn:${predictionId}`;
     const cached = await kvClient.get(cacheKey);
     if (cached) {
-      console.log("✅ Using cached Cloudinary URL:", predictionId);
+      console.log("Using cached Cloudinary URL:", predictionId);
       return cached as string;
     }
   }
@@ -68,29 +63,24 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
   const json = await r.json();
   const cdnUrl = json.secure_url as string;
   
-  // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
-    console.log("✅ Cached Cloudinary URL:", predictionId);
+    console.log("Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
 }
 
-// Poll fal.ai by request ID
 async function pollFalAI(requestId: string) {
-  // Check webhook cache first
   const kvClient = await initKV();
   if (kvClient) {
     const cached = await kvClient.get(`prediction:${requestId}`);
     if (cached) {
-      console.log("⚡ Using webhook cache:", requestId);
+      console.log("Using webhook cache:", requestId);
       return cached as any;
     }
   }
   
-  // FIXED: Use status endpoint (not result endpoint for polling)
-  // Status returns: { status: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" }
   const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}/status`;
   
   const statusRes = await fetch(statusUrl, {
@@ -101,9 +91,8 @@ async function pollFalAI(requestId: string) {
   
   if (!statusRes.ok) {
     const txt = await statusRes.text();
-    console.error('❌ fal.ai status check failed:', statusRes.status, txt);
+    console.error("fal.ai status check failed:", statusRes.status, txt);
     
-    // 404 might mean request doesn't exist or expired
     if (statusRes.status === 404) {
       return { 
         status: "failed" as const, 
@@ -121,11 +110,10 @@ async function pollFalAI(requestId: string) {
   
   const statusData = await statusRes.json();
   
-  console.log('📊 fal.ai status:', statusData);
+  console.log("fal.ai status:", statusData);
   
   const status = (statusData.status || "").toUpperCase();
   
-  // If still in queue or processing
   if (status === "IN_QUEUE" || status === "IN_PROGRESS") {
     return { 
       status: "processing" as const, 
@@ -133,7 +121,6 @@ async function pollFalAI(requestId: string) {
     };
   }
   
-  // If completed, fetch the result from result endpoint
   if (status === "COMPLETED") {
     const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
     
@@ -145,7 +132,7 @@ async function pollFalAI(requestId: string) {
     
     if (!resultRes.ok) {
       const txt = await resultRes.text();
-      console.error('❌ fal.ai result fetch failed:', resultRes.status, txt);
+      console.error("fal.ai result fetch failed:", resultRes.status, txt);
       return { 
         status: "failed" as const, 
         id: requestId, 
@@ -155,9 +142,8 @@ async function pollFalAI(requestId: string) {
     
     const resultData = await resultRes.json();
     
-    console.log('🎉 fal.ai result:', resultData);
+    console.log("fal.ai result:", resultData);
     
-    // Extract image URL from fal.ai response
     let falUrl: string | null = null;
     
     if (resultData.images && resultData.images[0]) {
@@ -165,7 +151,7 @@ async function pollFalAI(requestId: string) {
     }
     
     if (!falUrl) {
-      console.error('❌ No image URL in result:', resultData);
+      console.error("No image URL in result:", resultData);
       return { 
         status: "failed" as const, 
         id: requestId, 
@@ -173,14 +159,13 @@ async function pollFalAI(requestId: string) {
       };
     }
     
-    // Upload to Cloudinary
     let cdn_url: string | null = null;
     
     try {
       cdn_url = await uploadResultToCloudinary(falUrl, requestId);
-      console.log("✅ Uploaded to Cloudinary:", requestId);
+      console.log("Uploaded to Cloudinary:", requestId);
     } catch (e) {
-      console.warn("Cloudinary upload failed (fallback to fal.ai URL):", e);
+      console.warn("Cloudinary upload failed:", e);
     }
     
     const result = {
@@ -190,7 +175,6 @@ async function pollFalAI(requestId: string) {
       cdn_url
     };
     
-    // Cache for future requests
     if (kvClient) {
       await kvClient.set(`prediction:${requestId}`, result, { ex: 86400 });
     }
@@ -198,7 +182,6 @@ async function pollFalAI(requestId: string) {
     return result;
   }
   
-  // If failed
   if (status === "FAILED" || status === "ERROR") {
     const result = { 
       status: "failed" as const, 
@@ -206,7 +189,6 @@ async function pollFalAI(requestId: string) {
       error: statusData.error || "Generation failed" 
     };
     
-    // Cache errors too
     if (kvClient) {
       await kvClient.set(`prediction:${requestId}`, result, { ex: 3600 });
     }
@@ -214,15 +196,13 @@ async function pollFalAI(requestId: string) {
     return result;
   }
   
-  // Unknown status - assume still processing
-  console.warn('⚠️ Unknown fal.ai status:', status);
+  console.warn("Unknown fal.ai status:", status);
   return { 
     status: "processing" as const, 
     id: requestId 
   };
 }
 
-// Main handler
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
   
@@ -280,19 +260,3 @@ export default async function handler(req: Request) {
     );
   }
 }
-```
-
----
-
-## 🎯 Key Fix
-
-**Check status first (returns just status):**
-```
-GET /requests/{id}/status
-→ { "status": "COMPLETED" }
-```
-
-**Then fetch result (returns images):**
-```
-GET /requests/{id}
-→ { "images": [...] }
