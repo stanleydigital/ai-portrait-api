@@ -122,7 +122,8 @@ async function pollFalAI(requestId: string) {
   }
   
   if (status === "COMPLETED") {
-    const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
+   
+const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/requests/${requestId}`;
     
     const resultRes = await fetch(resultUrl, {
       headers: { 
