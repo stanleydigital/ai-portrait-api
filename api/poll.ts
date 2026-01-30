@@ -1,5 +1,6 @@
 export const config = { runtime: "edge" };
 
+// Allow-list of origins
 const ALLOWED_ORIGINS = new Set([
   "https://pawinci.com",
   "https://www.pawinci.com",
@@ -19,20 +20,24 @@ function corsWithOrigin(origin: string | null) {
   };
 }
 
+// KV Storage
 let kv: any = null;
 
 async function initKV() {
   if (kv) return kv;
+  
   try {
+    // @ts-ignore
     const { kv: kvClient } = await import('@vercel/kv');
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("KV not available");
+    console.warn("⚠️ Vercel KV not available");
     return null;
   }
 }
 
+// Helper: recursively find a URL in output
 function pickUrl(output: any): string | null {
   if (!output) return null;
   if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
@@ -50,11 +55,12 @@ function pickUrl(output: any): string | null {
   return null;
 }
 
+// Cloudinary upload helper with CACHING
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
-  const apiKey = process.env.CLOUDINARY_API_KEY!;
-  const apiSecret = process.env.CLOUDINARY_API_SECRET!;
+  const preset = process.env.CLOUDINARY_UPLOAD_PRESET!;
   
+  // Check cache first to avoid duplicate uploads
   const kvClient = await initKV();
   if (kvClient) {
     const cacheKey = `cdn:${predictionId}`;
@@ -65,154 +71,166 @@ async function uploadResultToCloudinary(fileUrl: string, predictionId: string): 
     }
   }
   
-  console.log("📤 Uploading to Cloudinary:", fileUrl);
-  
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
-  const timestamp = Math.floor(Date.now() / 1000);
-  const publicId = `results/${predictionId}`;
-  
-  const paramsToSign: Record<string, any> = {
-    timestamp,
-    public_id: publicId,
-    folder: "results"
-  };
-  
-  const sortedParams = Object.keys(paramsToSign)
-    .sort()
-    .map(key => `${key}=${paramsToSign[key]}`)
-    .join("&");
-  
-  const stringToSign = sortedParams + apiSecret;
-  const msgUint8 = new TextEncoder().encode(stringToSign);
-  const hashBuffer = await crypto.subtle.digest("SHA-1", msgUint8);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const signature = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
   
   const fd = new FormData();
   fd.append("file", fileUrl);
-  fd.append("api_key", apiKey);
-  fd.append("timestamp", timestamp.toString());
-  fd.append("signature", signature);
-  fd.append("public_id", publicId);
-  fd.append("folder", "results");
+  fd.append("upload_preset", preset);
+  fd.append("public_id", `valentine-results/${predictionId}`);
   
   const r = await fetch(endpoint, { method: "POST", body: fd });
   if (!r.ok) {
     const txt = await r.text();
-    console.error("❌ Cloudinary upload failed:", r.status, txt);
     throw new Error(`Cloudinary upload failed: ${r.status} ${txt}`);
   }
   const json = await r.json();
   const cdnUrl = json.secure_url as string;
   
-  console.log("✅ Cloudinary upload success:", cdnUrl);
-  
+  // Cache the result for 7 days
   if (kvClient) {
     await kvClient.set(`cdn:${predictionId}`, cdnUrl, { ex: 604800 });
+    console.log("✅ Cached Cloudinary URL:", predictionId);
   }
   
   return cdnUrl;
 }
 
-async function pollById(id: string, debug = false) {
+// Poll fal.ai by request ID
+async function pollFalAI(requestId: string) {
+  // Check webhook cache first
   const kvClient = await initKV();
   if (kvClient) {
-    const cached = await kvClient.get(`prediction:${id}`);
+    const cached = await kvClient.get(`prediction:${requestId}`);
     if (cached) {
-      console.log("⚡ Using webhook cache:", id);
+      console.log("⚡ Using webhook cache:", requestId);
       return cached as any;
     }
   }
   
-  // CRITICAL FIX: Remove /lora subpath from status/result endpoints!
-  // Submit uses: fal-ai/qwen-image-edit-2511/lora
-  // But status/result use: fal-ai/qwen-image-edit-2511 (no /lora)
-  const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/requests/${id}`;
+  // Poll fal.ai status endpoint
+  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}/status`;
   
-  console.log("🔍 Polling fal.ai:", resultUrl);
-  
-  const r = await fetch(resultUrl, {
-    method: "GET",
+  const r = await fetch(statusUrl, {
     headers: { 
-      "Authorization": `Key ${process.env.FAL_API_KEY}`,
-      "Content-Type": "application/json"
+      "Authorization": `Key ${process.env.FAL_API_KEY}`
     }
   });
   
-  console.log("📥 fal.ai response status:", r.status);
-  
   if (!r.ok) {
     const txt = await r.text();
-    console.error("❌ fal.ai result fetch failed:", r.status, txt);
+    console.error('❌ fal.ai status check failed:', r.status, txt);
+    return { 
+      status: "failed" as const, 
+      id: requestId, 
+      error: `fal.ai status check failed: ${r.status}` 
+    };
+  }
+  
+  const statusData = await r.json();
+  
+  console.log('📊 fal.ai status:', statusData);
+  
+  const status = (statusData.status || "").toLowerCase();
+  
+  // If still in queue or processing
+  if (status === "in_queue" || status === "in_progress") {
+    return { 
+      status: "processing" as const, 
+      id: requestId 
+    };
+  }
+  
+  // If completed, fetch the result
+  if (status === "completed") {
+    const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
     
-    // 400 means not completed yet
-    if (r.status === 400) {
-      return { status: "processing" as const, id };
+    const resultRes = await fetch(resultUrl, {
+      headers: { 
+        "Authorization": `Key ${process.env.FAL_API_KEY}`
+      }
+    });
+    
+    if (!resultRes.ok) {
+      const txt = await resultRes.text();
+      console.error('❌ fal.ai result fetch failed:', resultRes.status, txt);
+      return { 
+        status: "failed" as const, 
+        id: requestId, 
+        error: `Failed to fetch result: ${resultRes.status}` 
+      };
     }
     
-    return { status: "failed" as const, id, error: `fal.ai fetch failed: ${r.status} ${txt}` };
-  }
-  
-  const pred = await r.json();
-  
-  if (debug) {
-    return { status: pred.status, raw: pred };
-  }
-  
-  console.log("📊 fal.ai response data:", JSON.stringify(pred, null, 2));
-  
-  const status = pred.status;
-  
-  if (status === "COMPLETED") {
-    // According to docs: "response" field is at root level when status is COMPLETED
-    const imageUrl = pred.response?.images?.[0]?.url || pickUrl(pred.response);
+    const resultData = await resultRes.json();
     
-    console.log("🖼️ Extracted image URL:", imageUrl);
+    console.log('🎉 fal.ai result:', resultData);
     
+    // Extract image URL from fal.ai response
+    // Response format: { images: [{ url: "...", width: 800, height: 1120 }] }
+    let falUrl: string | null = null;
+    
+    if (resultData.images && resultData.images[0]) {
+      falUrl = resultData.images[0].url;
+    }
+    
+    if (!falUrl) {
+      console.error('❌ No image URL in result:', resultData);
+      return { 
+        status: "failed" as const, 
+        id: requestId, 
+        error: "No image in result" 
+      };
+    }
+    
+    // Upload to Cloudinary
     let cdn_url: string | null = null;
     
-    if (imageUrl) {
-      try {
-        cdn_url = await uploadResultToCloudinary(imageUrl, id);
-      } catch (e) {
-        console.error("❌ Cloudinary upload error:", e);
-      }
-    } else {
-      console.error("❌ No image URL found! Full response:", JSON.stringify(pred));
+    try {
+      cdn_url = await uploadResultToCloudinary(falUrl, requestId);
+      console.log("✅ Uploaded to Cloudinary:", requestId);
+    } catch (e) {
+      console.warn("Cloudinary upload failed (fallback to fal.ai URL):", e);
     }
     
     const result = {
       status: "succeeded" as const,
-      id,
-      output: imageUrl ? [imageUrl] : [],
+      id: requestId,
+      output: [falUrl],
       cdn_url
     };
     
+    // Cache for future requests
     if (kvClient) {
-      await kvClient.set(`prediction:${id}`, result, { ex: 86400 });
+      await kvClient.set(`prediction:${requestId}`, result, { ex: 86400 });
     }
     
     return result;
   }
   
-  if (status === "FAILED") {
+  // If failed
+  if (status === "failed" || status === "error") {
     const result = { 
       status: "failed" as const, 
-      id, 
-      error: pred.error || pred.logs || "Generation failed" 
+      id: requestId, 
+      error: statusData.error || "Generation failed" 
     };
     
+    // Cache errors too
     if (kvClient) {
-      await kvClient.set(`prediction:${id}`, result, { ex: 3600 });
+      await kvClient.set(`prediction:${requestId}`, result, { ex: 3600 });
     }
     
     return result;
   }
   
-  // IN_QUEUE or IN_PROGRESS
-  return { status: "processing" as const, id };
+  // Unknown status
+  console.warn('⚠️ Unknown fal.ai status:', status);
+  return { 
+    status: "processing" as const, 
+    id: requestId 
+  };
 }
 
+// Main handler
 export default async function handler(req: Request) {
   const origin = req.headers.get("origin");
   
@@ -224,38 +242,49 @@ export default async function handler(req: Request) {
     if (req.method === "GET") {
       const { searchParams } = new URL(req.url);
       const id = searchParams.get("id");
-      const debug = searchParams.get("debug") === "1";
       
       if (!id) {
-        return new Response(JSON.stringify({ error: "Missing id" }), {
-          status: 200, ...corsWithOrigin(origin)
-        });
+        return new Response(
+          JSON.stringify({ error: "Missing id parameter" }), 
+          { status: 400, ...corsWithOrigin(origin) }
+        );
       }
       
-      const data = await pollById(id, debug);
-      return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
+      const data = await pollFalAI(id);
+      return new Response(
+        JSON.stringify(data), 
+        { status: 200, ...corsWithOrigin(origin) }
+      );
     }
     
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
-      const id = body.id;
-      const debug = body.debug === true;
+      const requestId: string | undefined = body.request_id || body.id;
       
-      if (!id) {
-        return new Response(JSON.stringify({ error: "Missing id" }), {
-          status: 200, ...corsWithOrigin(origin)
-        });
+      if (!requestId) {
+        return new Response(
+          JSON.stringify({ error: "Missing request_id or id" }), 
+          { status: 400, ...corsWithOrigin(origin) }
+        );
       }
       
-      const data = await pollById(id, debug);
-      return new Response(JSON.stringify(data), { status: 200, ...corsWithOrigin(origin) });
+      const data = await pollFalAI(requestId);
+      return new Response(
+        JSON.stringify(data), 
+        { status: 200, ...corsWithOrigin(origin) }
+      );
     }
     
-    return new Response("Method not allowed", { status: 405, ...corsWithOrigin(origin) });
+    return new Response(
+      "Method not allowed", 
+      { status: 405, ...corsWithOrigin(origin) }
+    );
+    
   } catch (err: any) {
-    console.error("❌ Poll error:", err);
-    return new Response(JSON.stringify({ status: "processing" }), {
-      status: 200, ...corsWithOrigin(origin)
-    });
+    console.error("Poll server error:", err);
+    return new Response(
+      JSON.stringify({ status: "processing" }), 
+      { status: 200, ...corsWithOrigin(origin) }
+    );
   }
 }
