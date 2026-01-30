@@ -37,24 +37,6 @@ async function initKV() {
   }
 }
 
-// Helper: recursively find a URL in output
-function pickUrl(output: any): string | null {
-  if (!output) return null;
-  if (typeof output === "string" && /^https?:\/\//.test(output)) return output;
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      const u = pickUrl(item);
-      if (u) return u;
-    }
-  } else if (typeof output === "object") {
-    for (const v of Object.values(output)) {
-      const u = pickUrl(v);
-      if (u) return u;
-    }
-  }
-  return null;
-}
-
 // Cloudinary upload helper with CACHING
 async function uploadResultToCloudinary(fileUrl: string, predictionId: string): Promise<string> {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME!;
@@ -107,70 +89,42 @@ async function pollFalAI(requestId: string) {
     }
   }
   
-  // Poll fal.ai status endpoint
-  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}/status`;
+  // FIXED: Use result endpoint (not /status)
+  const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
   
-  const r = await fetch(statusUrl, {
+  const r = await fetch(resultUrl, {
     headers: { 
-      "Authorization": `Key ${process.env.FAL_API_KEY}`
+      "Authorization": `Key ${process.env.FAL_API_KEY}`,
+      "Content-Type": "application/json"
     }
   });
   
   if (!r.ok) {
     const txt = await r.text();
-    console.error('❌ fal.ai status check failed:', r.status, txt);
-    return { 
-      status: "failed" as const, 
-      id: requestId, 
-      error: `fal.ai status check failed: ${r.status}` 
-    };
-  }
-  
-  const statusData = await r.json();
-  
-  console.log('📊 fal.ai status:', statusData);
-  
-  const status = (statusData.status || "").toLowerCase();
-  
-  // If still in queue or processing
-  if (status === "in_queue" || status === "in_progress") {
-    return { 
-      status: "processing" as const, 
-      id: requestId 
-    };
-  }
-  
-  // If completed, fetch the result
-  if (status === "completed") {
-    const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
+    console.error('❌ fal.ai poll failed:', r.status, txt);
     
-    const resultRes = await fetch(resultUrl, {
-      headers: { 
-        "Authorization": `Key ${process.env.FAL_API_KEY}`
-      }
-    });
-    
-    if (!resultRes.ok) {
-      const txt = await resultRes.text();
-      console.error('❌ fal.ai result fetch failed:', resultRes.status, txt);
+    // 404 might mean still in queue
+    if (r.status === 404) {
       return { 
-        status: "failed" as const, 
-        id: requestId, 
-        error: `Failed to fetch result: ${resultRes.status}` 
+        status: "processing" as const, 
+        id: requestId 
       };
     }
     
-    const resultData = await resultRes.json();
-    
-    console.log('🎉 fal.ai result:', resultData);
-    
-    // Extract image URL from fal.ai response
-    // Response format: { images: [{ url: "...", width: 800, height: 1120 }] }
-    let falUrl: string | null = null;
-    
-    if (resultData.images && resultData.images[0]) {
-      falUrl = resultData.images[0].url;
-    }
+    return { 
+      status: "failed" as const, 
+      id: requestId, 
+      error: `fal.ai poll failed: ${r.status}` 
+    };
+  }
+  
+  const resultData = await r.json();
+  
+  console.log('📊 fal.ai response:', resultData);
+  
+  // Check if completed (has images)
+  if (resultData.images && resultData.images[0]) {
+    const falUrl = resultData.images[0].url;
     
     if (!falUrl) {
       console.error('❌ No image URL in result:', resultData);
@@ -206,12 +160,15 @@ async function pollFalAI(requestId: string) {
     return result;
   }
   
+  // Check explicit status
+  const status = (resultData.status || "").toLowerCase();
+  
   // If failed
   if (status === "failed" || status === "error") {
     const result = { 
       status: "failed" as const, 
       id: requestId, 
-      error: statusData.error || "Generation failed" 
+      error: resultData.error || "Generation failed" 
     };
     
     // Cache errors too
@@ -222,8 +179,7 @@ async function pollFalAI(requestId: string) {
     return result;
   }
   
-  // Unknown status
-  console.warn('⚠️ Unknown fal.ai status:', status);
+  // Still processing (no images yet)
   return { 
     status: "processing" as const, 
     id: requestId 
