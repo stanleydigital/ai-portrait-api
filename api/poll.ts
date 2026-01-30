@@ -89,42 +89,80 @@ async function pollFalAI(requestId: string) {
     }
   }
   
-  // FIXED: Use result endpoint (not /status)
-  const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
+  // FIXED: Use status endpoint (not result endpoint for polling)
+  // Status returns: { status: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" }
+  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}/status`;
   
-  const r = await fetch(resultUrl, {
+  const statusRes = await fetch(statusUrl, {
     headers: { 
-      "Authorization": `Key ${process.env.FAL_API_KEY}`,
-      "Content-Type": "application/json"
+      "Authorization": `Key ${process.env.FAL_API_KEY}`
     }
   });
   
-  if (!r.ok) {
-    const txt = await r.text();
-    console.error('❌ fal.ai poll failed:', r.status, txt);
+  if (!statusRes.ok) {
+    const txt = await statusRes.text();
+    console.error('❌ fal.ai status check failed:', statusRes.status, txt);
     
-    // 404 might mean still in queue
-    if (r.status === 404) {
+    // 404 might mean request doesn't exist or expired
+    if (statusRes.status === 404) {
       return { 
-        status: "processing" as const, 
-        id: requestId 
+        status: "failed" as const, 
+        id: requestId,
+        error: "Request not found or expired"
       };
     }
     
     return { 
       status: "failed" as const, 
       id: requestId, 
-      error: `fal.ai poll failed: ${r.status}` 
+      error: `fal.ai status check failed: ${statusRes.status}` 
     };
   }
   
-  const resultData = await r.json();
+  const statusData = await statusRes.json();
   
-  console.log('📊 fal.ai response:', resultData);
+  console.log('📊 fal.ai status:', statusData);
   
-  // Check if completed (has images)
-  if (resultData.images && resultData.images[0]) {
-    const falUrl = resultData.images[0].url;
+  const status = (statusData.status || "").toUpperCase();
+  
+  // If still in queue or processing
+  if (status === "IN_QUEUE" || status === "IN_PROGRESS") {
+    return { 
+      status: "processing" as const, 
+      id: requestId 
+    };
+  }
+  
+  // If completed, fetch the result from result endpoint
+  if (status === "COMPLETED") {
+    const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/lora/requests/${requestId}`;
+    
+    const resultRes = await fetch(resultUrl, {
+      headers: { 
+        "Authorization": `Key ${process.env.FAL_API_KEY}`
+      }
+    });
+    
+    if (!resultRes.ok) {
+      const txt = await resultRes.text();
+      console.error('❌ fal.ai result fetch failed:', resultRes.status, txt);
+      return { 
+        status: "failed" as const, 
+        id: requestId, 
+        error: `Failed to fetch result: ${resultRes.status}` 
+      };
+    }
+    
+    const resultData = await resultRes.json();
+    
+    console.log('🎉 fal.ai result:', resultData);
+    
+    // Extract image URL from fal.ai response
+    let falUrl: string | null = null;
+    
+    if (resultData.images && resultData.images[0]) {
+      falUrl = resultData.images[0].url;
+    }
     
     if (!falUrl) {
       console.error('❌ No image URL in result:', resultData);
@@ -160,15 +198,12 @@ async function pollFalAI(requestId: string) {
     return result;
   }
   
-  // Check explicit status
-  const status = (resultData.status || "").toLowerCase();
-  
   // If failed
-  if (status === "failed" || status === "error") {
+  if (status === "FAILED" || status === "ERROR") {
     const result = { 
       status: "failed" as const, 
       id: requestId, 
-      error: resultData.error || "Generation failed" 
+      error: statusData.error || "Generation failed" 
     };
     
     // Cache errors too
@@ -179,7 +214,8 @@ async function pollFalAI(requestId: string) {
     return result;
   }
   
-  // Still processing (no images yet)
+  // Unknown status - assume still processing
+  console.warn('⚠️ Unknown fal.ai status:', status);
   return { 
     status: "processing" as const, 
     id: requestId 
@@ -244,3 +280,19 @@ export default async function handler(req: Request) {
     );
   }
 }
+```
+
+---
+
+## 🎯 Key Fix
+
+**Check status first (returns just status):**
+```
+GET /requests/{id}/status
+→ { "status": "COMPLETED" }
+```
+
+**Then fetch result (returns images):**
+```
+GET /requests/{id}
+→ { "images": [...] }
