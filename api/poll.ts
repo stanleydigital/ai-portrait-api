@@ -146,9 +146,14 @@ async function pollFalAI(requestId: string) {
     
     let falUrl: string | null = null;
     
-    if (resultData.images && resultData.images[0]) {
-      falUrl = resultData.images[0].url;
-    }
+    // Handle both direct model response and workflow response
+if (resultData.image && resultData.image.url) {
+  // Workflow output format (single image)
+  falUrl = resultData.image.url;
+} else if (resultData.images && resultData.images[0]) {
+  // Direct model output format (array of images)
+  falUrl = resultData.images[0].url;
+}
     
     if (!falUrl) {
       console.error("No image URL in result:", resultData);
