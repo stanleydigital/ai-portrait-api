@@ -120,7 +120,7 @@ export default async function handler(req: Request) {
     console.log('📤 Submitting to workflow queue...');
     
     // Use the QUEUE endpoint for workflows (same as models)
-    const falResponse = await fetch('https://fal.run/workflows/stanrazvanneugen/cards', {
+    const falResponse = await fetch('https://queue.fal.run/workflows/stanrazvaneugen/cards', {
       method: 'POST',
       headers: {
         'Authorization': `Key ${process.env.FAL_API_KEY}`,
