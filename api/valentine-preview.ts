@@ -29,7 +29,7 @@ async function initKV() {
     kv = kvClient;
     return kv;
   } catch (err) {
-    console.warn("⚠️ Vercel KV not available, falling back to in-memory rate limiting");
+    console.warn("⚠️ Vercel KV not available");
     return null;
   }
 }
@@ -85,7 +85,7 @@ export default async function handler(req: Request) {
     if (!await checkRateLimit(ip, 50, 3600000)) {
       return new Response(
         JSON.stringify({
-          error: "Rate limit exceeded. You can generate 50 portraits per hour. Please try again later."
+          error: "Rate limit exceeded. Please try again later."
         }),
         { status: 429, ...cors(origin) }
       );
@@ -96,9 +96,9 @@ export default async function handler(req: Request) {
     const templateUrl: string | undefined = body.templateUrl;
     const userPhotoUrl: string | undefined = body.userPhotoUrl;
     
-    console.log('📥 Valentine workflow request received:');
-    console.log('  Template URL:', templateUrl);
-    console.log('  User photo URL:', userPhotoUrl);
+    console.log('📥 Workflow request:');
+    console.log('  Template:', templateUrl);
+    console.log('  User photo:', userPhotoUrl);
     
     if (!templateUrl || !userPhotoUrl) {
       return new Response(
@@ -117,13 +117,15 @@ export default async function handler(req: Request) {
       );
     }
     
-    console.log('📤 Calling fal.ai workflow...');
+    console.log('📤 Submitting to workflow queue...');
     
+    // Use the QUEUE endpoint for workflows (same as models)
     const falResponse = await fetch('https://queue.fal.run/workflows/stanrazvanneugen/cards', {
       method: 'POST',
       headers: {
         'Authorization': `Key ${process.env.FAL_API_KEY}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
       },
       body: JSON.stringify({
         template_url: templateUrl,
@@ -132,48 +134,55 @@ export default async function handler(req: Request) {
     });
     
     const falText = await falResponse.text();
+    console.log('📥 fal.ai raw response:', falText);
+    console.log('📥 fal.ai status:', falResponse.status);
+    
     let falData: any = null;
     
     try {
       falData = JSON.parse(falText);
     } catch {
-      console.error('❌ Non-JSON response from fal.ai:', falText);
+      console.error('❌ Non-JSON response:', falText);
       return new Response(
-        JSON.stringify({ error: 'Invalid response from AI service' }),
+        JSON.stringify({ error: `Invalid response from AI service: ${falText}` }),
         { status: 500, ...cors(origin) }
       );
     }
     
     if (!falResponse.ok) {
-      console.error('❌ fal.ai error:', falData);
+      console.error('❌ fal.ai error response:', falData);
+      const errorMsg = falData.detail || falData.error || falData.message || JSON.stringify(falData);
       return new Response(
-        JSON.stringify({ error: falData.detail || falData.error || 'AI generation failed' }),
+        JSON.stringify({ error: `AI service error: ${errorMsg}` }),
         { status: falResponse.status, ...cors(origin) }
       );
     }
     
-    console.log('✅ fal.ai response:', falData);
+    console.log('✅ fal.ai success response:', falData);
     
-    if (falData.request_id) {
+    // Extract request_id from response
+    const requestId = falData.request_id || falData.id || falData.requestId;
+    
+    if (requestId) {
       return new Response(
         JSON.stringify({
-          id: falData.request_id,
+          id: requestId,
           status: 'processing'
         }),
         { status: 200, ...cors(origin) }
       );
     }
     
-    console.error('❌ Unexpected fal.ai response format:', falData);
+    console.error('❌ No request_id in response:', falData);
     return new Response(
-      JSON.stringify({ error: 'Unexpected response format from AI service' }),
+      JSON.stringify({ error: 'No request ID in response', debug: falData }),
       { status: 500, ...cors(origin) }
     );
     
   } catch (err: any) {
     console.error('❌ Server error:', err);
     return new Response(
-      JSON.stringify({ error: err.message || 'Generation failed' }),
+      JSON.stringify({ error: err.message || 'Generation failed', stack: err.stack }),
       { status: 500, ...cors(origin) }
     );
   }
