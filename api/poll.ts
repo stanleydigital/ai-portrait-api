@@ -81,7 +81,7 @@ async function pollFalAI(requestId: string) {
     }
   }
   
-  const statusUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/requests/${requestId}/status`;
+  const statusUrl = `https://queue.fal.run/workflows/stanrazvanneugen/cards/requests/${requestId}/status`;
   
   const statusRes = await fetch(statusUrl, {
     headers: { 
@@ -122,7 +122,7 @@ async function pollFalAI(requestId: string) {
   }
   
   if (status === "COMPLETED") {
-    const resultUrl = `https://queue.fal.run/fal-ai/qwen-image-edit-2511/requests/${requestId}`;
+    const resultUrl = `https://queue.fal.run/workflows/stanrazvanneugen/cards/requests/${requestId}`;
     
     const resultRes = await fetch(resultUrl, {
       headers: { 
