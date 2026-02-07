@@ -117,6 +117,13 @@ export default async function handler(req: Request) {
       );
     }
     
+    // ✨ NEW: Apply tight square face crop to user photo
+    const faceCroppedUrl = userPhotoUrl.replace(
+      '/upload/',
+      '/upload/ar_1:1,c_crop,g_face,q_auto,f_auto/'
+    );
+    
+    console.log('✂️ Face-cropped URL:', faceCroppedUrl);
     console.log('📤 Submitting to workflow queue...');
     
     // Use the QUEUE endpoint for workflows (same as models)
@@ -129,7 +136,7 @@ export default async function handler(req: Request) {
       },
       body: JSON.stringify({
         template_url: templateUrl,
-        user_photo_url: userPhotoUrl
+        user_photo_url: faceCroppedUrl  // ✨ Use face-cropped version
       })
     });
     
