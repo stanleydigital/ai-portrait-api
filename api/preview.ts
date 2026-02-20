@@ -151,9 +151,7 @@ export default async function handler(req: Request) {
 
     
     // Stronger prompt to avoid generic results
-    //const finalPrompt =
-     // (prompt ? prompt + " " : "") +
-     // "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
+    const finalPrompt = prompt;
     
     // ✅ Send ALL commonly accepted keys so any Seedream build uses the image & text
     const input: Record<string, any> = {
