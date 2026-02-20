@@ -147,18 +147,13 @@ export default async function handler(req: Request) {
     }
     
     // OPTIMIZATION: Use Cloudinary transformations to optimize image before sending to Replicate
-let optimizedImageUrl = imageUrl;
-if (/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(imageUrl)) {
-  optimizedImageUrl = imageUrl.replace(
-    "/upload/",
-    "/upload/f_auto,q_auto,w_2048,h_2048,c_fit/"
-  );
-}
+    let optimizedImageUrl = imageUrl;
+
     
     // Stronger prompt to avoid generic results
-    const finalPrompt =
-      (prompt ? prompt + " " : "") +
-      "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
+    //const finalPrompt =
+     // (prompt ? prompt + " " : "") +
+     // "Preserve the exact identity from the uploaded photo (same markings, colors, and features). Centered subject, clean background.";
     
     // ✅ Send ALL commonly accepted keys so any Seedream build uses the image & text
     const input: Record<string, any> = {
@@ -172,7 +167,8 @@ if (/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(imageUrl)) {
       // size
       size: "custom",
       width: 3072,
-      height: 4096
+      height: 4096,
+      enhance_prompt: false
     };
     
     // --- Get webhook URL for this deployment ---
